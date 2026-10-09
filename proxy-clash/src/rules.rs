@@ -1,6 +1,6 @@
 //! Глобальные секции и правила маршрутизации Clash/mihomo.
 
-use crate::{num, put, str_val};
+use crate::{num, put, str_val, DIRECT_GROUP};
 use serde_yaml_ng::{Mapping, Value as Yaml};
 
 /// Добавляет в корневой mapping глобальные секции (шаблон проекта).
@@ -25,9 +25,9 @@ pub fn rules(include_categories: bool) -> Yaml {
         str_val("GEOSITE,private,DIRECT"),
         str_val("GEOIP,private,DIRECT,no-resolve"),
         str_val("GEOSITE,category-ads-all,REJECT"),
-        str_val("GEOSITE,CATEGORY-BANK-RU,DIRECT"),
-        str_val("GEOSITE,category-ru,DIRECT"),
-        str_val("GEOIP,RU,DIRECT,no-resolve"),
+        str_val(&format!("GEOSITE,CATEGORY-BANK-RU,{DIRECT_GROUP}")),
+        str_val(&format!("GEOSITE,category-ru,{DIRECT_GROUP}")),
+        str_val(&format!("GEOIP,RU,{DIRECT_GROUP},no-resolve")),
     ];
 
     let blocked = if include_categories {
@@ -41,9 +41,6 @@ pub fn rules(include_categories: bool) -> Yaml {
     };
 
     r.push(Yaml::String(format!("GEOSITE,RU-BLOCKED,{blocked}")));
-    r.push(str_val("PROCESS-NAME,AyuGram.exe,🔓 Заблокированные"));
-    r.push(str_val("PROCESS-NAME,Blitz.exe,🔓 Заблокированные"));
-    r.push(str_val("PROCESS-NAME,Discord.exe,DIRECT"));
     r.push(str_val("MATCH,🚀 Прокси"));
     Yaml::Sequence(r)
 }
@@ -169,5 +166,28 @@ mod tests {
         let list = seq.as_sequence().unwrap();
         assert!(!list.iter().any(|v| v.as_str() == Some("GEOSITE,youtube,📺 YouTube")));
         assert!(list.iter().any(|v| v.as_str() == Some("GEOSITE,RU-BLOCKED,🚀 Прокси")));
+    }
+
+    #[test]
+    fn russian_rules_route_to_direct_group() {
+        let seq = rules(true);
+        let list = seq.as_sequence().unwrap();
+        let expect = [
+            format!("GEOSITE,CATEGORY-BANK-RU,{DIRECT_GROUP}"),
+            format!("GEOSITE,category-ru,{DIRECT_GROUP}"),
+            format!("GEOIP,RU,{DIRECT_GROUP},no-resolve"),
+        ];
+        for rule in &expect {
+            assert!(list.iter().any(|v| v.as_str() == Some(rule.as_str())), "нет {rule}");
+        }
+    }
+
+    #[test]
+    fn process_name_rules_removed() {
+        let seq = rules(true);
+        let list = seq.as_sequence().unwrap();
+        assert!(!list
+            .iter()
+            .any(|v| v.as_str().map(|s| s.starts_with("PROCESS-NAME")).unwrap_or(false)));
     }
 }

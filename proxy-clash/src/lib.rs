@@ -48,6 +48,9 @@ impl Default for Options {
     }
 }
 
+/// Имя группы ручного маршрута «напрямую» (транзит русских правил и т.п.).
+pub(crate) const DIRECT_GROUP: &str = "🟢 Напрямую";
+
 /// Что получилось в итоге.
 #[derive(Clone, Debug, Default)]
 pub struct Report {
@@ -246,7 +249,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(rep.countries, 0);
-        assert_eq!(rep.groups, 4);
+        assert_eq!(rep.groups, 5);
         assert!(!yaml.contains("Telegram"));
     }
 }

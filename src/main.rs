@@ -99,6 +99,7 @@ struct Summary {
     speed_total: usize,
     speed_passed: usize,
     speed_secs: f64,
+    bad_outbounds: usize,
     alive: usize,
     good: usize,
     avg_kbs: f64,
@@ -185,6 +186,9 @@ fn print_summary(s: &Summary) {
                 fmt_speed(s.avg_kbs).cyan(),
                 fmt_speed(s.median_kbs).cyan()
             );
+        }
+        if s.bad_outbounds > 0 {
+            println!("    битых outbound: {}", s.bad_outbounds);
         }
     }
 
@@ -503,6 +507,7 @@ async fn main() -> anyhow::Result<()> {
             .await;
         sum.speed_secs = t.elapsed().as_secs_f64();
         sum.speed_passed = passed.len();
+        sum.bad_outbounds = checker.bad_outbounds();
 
         let passed_keys: HashSet<String> = passed.iter().map(|p| p.key()).collect();
         for p in &candidates {
