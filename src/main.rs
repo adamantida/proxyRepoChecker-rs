@@ -35,7 +35,7 @@ fn default_core_path() -> anyhow::Result<PathBuf> {
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
-    Ok(dir.join("xray.exe"))
+    Ok(dir.join(xray::core_bin_name()))
 }
 
 /// Ищет файл: сначала по пути, потом рядом с exe, потом в bin/ проекта.
