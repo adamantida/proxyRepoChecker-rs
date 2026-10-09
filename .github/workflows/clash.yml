@@ -3,7 +3,7 @@ name: clash-config
 on:
   schedule:
     # Каждые 2 часа (со смещением от начала часа)
-    - cron: "0 */1 * * *"
+    - cron: "0 * * * *"
   workflow_dispatch:
     inputs:
       set:
