@@ -30,5 +30,9 @@
 - Source and logs are **Russian**. Do **not** edit sources with PowerShell `Get-Content`/`Set-Content` (corrupts Cyrillic and may add a BOM) — use the `edit`/`write` tools.
 - Console output uses `indicatif` progress bars only + a `>> [+Ns]` prefix (macro in `main.rs`) + a colored final summary (`colored` crate). Do not add periodic `println!` progress lines.
 
-## Use
+## Connect
+### Url
 `https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/clash.yaml`
+### Qr
+<img width="270" height="270" alt="qr-code" src="https://github.com/user-attachments/assets/1f7ae9a9-00e5-4230-9059-42d78c6b7fe6" />
+
