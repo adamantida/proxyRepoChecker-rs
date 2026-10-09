@@ -1,4 +1,4 @@
-mod check;
+﻿mod check;
 mod cli;
 mod fetch;
 mod geoip;
@@ -27,6 +27,15 @@ fn default_geoip_path() -> anyhow::Result<PathBuf> {
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
     Ok(dir.join("geoip.dat"))
+}
+
+fn default_core_path() -> anyhow::Result<PathBuf> {
+    let exe = std::env::current_exe()?;
+    let dir = exe
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    Ok(dir.join("xray.exe"))
 }
 
 /// Ищет файл: сначала по пути, потом рядом с exe, потом в bin/ проекта.
@@ -97,6 +106,8 @@ struct Summary {
     alive_file: Option<(String, usize)>,
     good_file: Option<(String, usize)>,
     dead_file: Option<(String, usize)>,
+    raw_file: Option<(String, usize)>,
+    parsed_file: Option<(String, usize)>,
     total_secs: f64,
 }
 
@@ -183,6 +194,8 @@ fn print_summary(s: &Summary) {
     );
 
     let files: Vec<String> = [
+        s.raw_file.as_ref(),
+        s.parsed_file.as_ref(),
         s.alive_file.as_ref(),
         s.good_file.as_ref(),
         s.dead_file.as_ref(),
@@ -231,6 +244,11 @@ async fn main() -> anyhow::Result<()> {
     sum.fetch_loaded = texts.len();
     sum.fetch_secs = t.elapsed().as_secs_f64();
     info!("Загружено подписок: {}", texts.len());
+    if !texts.is_empty() {
+        output::write_lines_atomic(&cli.raw_output, &texts)?;
+        sum.raw_file = Some((cli.raw_output.clone(), texts.len()));
+        info!("Сохранено: {} ({} подписок)", cli.raw_output, texts.len());
+    }
 
     // ------------------------------------------------------------------
     // 3. Парсинг + дедуп
@@ -288,6 +306,16 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    output::write_lines_atomic(
+        &cli.parsed_output,
+        &proxies
+            .iter()
+            .map(|p| output::line(p, false))
+            .collect::<Vec<_>>(),
+    )?;
+    sum.parsed_file = Some((cli.parsed_output.clone(), proxies.len()));
+    info!("Сохранено: {} ({} прокси до проверок)", cli.parsed_output, proxies.len());
+
     // ------------------------------------------------------------------
     // 4. GeoIP: страна + переименование в [XX] - NNN
     // ------------------------------------------------------------------
@@ -312,6 +340,15 @@ async fn main() -> anyhow::Result<()> {
             p.display = p.name.clone();
         }
     }
+
+    output::write_lines_atomic(
+        &cli.parsed_output,
+        &proxies
+            .iter()
+            .map(|p| output::line(p, rename))
+            .collect::<Vec<_>>(),
+    )?;
+    info!("Обновлено: {} (имена {})", cli.parsed_output, if rename { "GeoIP" } else { "без GeoIP" });
 
     let mut dead_urls: Vec<String> = Vec::new();
 
@@ -356,7 +393,7 @@ async fn main() -> anyhow::Result<()> {
     if candidates.is_empty() {
         info!("Нет живых прокси после TCP ping.");
         if let Some(path) = &cli.dead {
-            output::write_lines(path, &dead_urls)?;
+            output::write_lines_atomic(path, &dead_urls)?;
             sum.dead_file = Some((path.clone(), dead_urls.len()));
         }
         sum.total_secs = started.elapsed().as_secs_f64();
@@ -384,6 +421,33 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Сохраняем результат TCP-этапа сразу
+    if !cli.no_tcp_ping {
+        let mut tcp_alive = candidates.clone();
+        tcp_alive.sort_by_key(|p| p.ping.unwrap_or(u64::MAX));
+        output::write_lines_atomic(
+            &cli.output,
+            &tcp_alive
+                .iter()
+                .map(|p| output::line(p, rename))
+                .collect::<Vec<_>>(),
+        )?;
+        sum.alive_file = Some((cli.output.clone(), tcp_alive.len()));
+        if let Some(path) = &cli.dead {
+            output::write_lines_atomic(path, &dead_urls)?;
+            sum.dead_file = Some((path.clone(), dead_urls.len()));
+        }
+        info!(
+            "Сохранено после TCP: {} ({} живых){}",
+            cli.output,
+            tcp_alive.len(),
+            match &cli.dead {
+                Some(p) => format!(", {p} ({} мёртвых)", dead_urls.len()),
+                None => String::new(),
+            }
+        );
+    }
+
     let mut alive: Vec<Proxy>;
     let mut good: Vec<Proxy> = Vec::new();
 
@@ -399,6 +463,14 @@ async fn main() -> anyhow::Result<()> {
             alive.len()
         );
     } else {
+        let core_path = if PathBuf::from(&cli.core).exists() {
+            PathBuf::from(&cli.core)
+        } else {
+            default_core_path()?
+        };
+        xray::ensure_core(&core_path, cli.xray_url.as_deref(), cli.no_xray_download).await?;
+        cli.core = core_path.display().to_string();
+
         let checker = xray::Checker::new(&cli)?;
         info!(
             "Фаза 2 (скорость через xray): {} прокси, батчи {}, потоков {}, до {:.1} MB, мин {:.1} KB/s",
@@ -424,6 +496,7 @@ async fn main() -> anyhow::Result<()> {
                 cli.batch_workers,
                 opts,
                 "замер скорости",
+                Some(cli.good_output.clone()),
             )
             .await;
         sum.speed_secs = t.elapsed().as_secs_f64();
@@ -449,7 +522,7 @@ async fn main() -> anyhow::Result<()> {
                 .partial_cmp(&a.speed_kbs)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        output::write_lines(
+        output::write_lines_atomic(
             &cli.good_output,
             &good
                 .iter()
@@ -464,7 +537,7 @@ async fn main() -> anyhow::Result<()> {
         alive.sort_by_key(|p| p.ping.unwrap_or(u64::MAX));
     }
 
-    output::write_lines(
+    output::write_lines_atomic(
         &cli.output,
         &alive
             .iter()
@@ -479,7 +552,7 @@ async fn main() -> anyhow::Result<()> {
     // 7. Мёртвые + итог
     // ------------------------------------------------------------------
     if let Some(path) = &cli.dead {
-        output::write_lines(path, &dead_urls)?;
+        output::write_lines_atomic(path, &dead_urls)?;
         sum.dead_file = Some((path.clone(), dead_urls.len()));
     }
 
