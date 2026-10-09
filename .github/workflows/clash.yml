@@ -11,7 +11,7 @@ on:
         default: "all"
       limit:
         description: "Лимит прокси до проверок"
-        default: "50000"
+        default: "25000"
 
 permissions:
   contents: write
