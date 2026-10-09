@@ -34,6 +34,6 @@
 ### Url
 `https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/clash.yaml`
 ### Qr
-<img width="1148" height="1148" alt="qr-code" src="https://github.com/user-attachments/assets/7b86669d-715d-4f39-a396-3c2cda4ae266" />
+<img width="256" height="256" alt="qr-code" src="https://github.com/user-attachments/assets/7b86669d-715d-4f39-a396-3c2cda4ae266" />
 
 
