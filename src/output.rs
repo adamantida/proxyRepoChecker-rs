@@ -15,8 +15,12 @@ pub fn write_lines_atomic(path: &str, lines: &[String]) -> Result<()> {
         out.push_str(l);
         out.push('\n');
     }
+    write_text_atomic(path, &out)
+}
+
+pub fn write_text_atomic(path: &str, text: &str) -> Result<()> {
     let tmp = format!("{path}.tmp");
-    std::fs::write(&tmp, out).with_context(|| format!("не удалось записать {tmp}"))?;
+    std::fs::write(&tmp, text).with_context(|| format!("не удалось записать {tmp}"))?;
     std::fs::rename(&tmp, path).with_context(|| format!("не удалось заменить {path}"))?;
     Ok(())
 }

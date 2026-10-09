@@ -88,6 +88,24 @@ pub struct Cli {
     #[arg(long = "parsed-output", default_value = "parsed.txt", help_heading = "Вывод")]
     pub parsed_output: String,
 
+    /// Сгенерировать Clash/mihomo конфиг из good-прокси (без значения — clash.yaml)
+    #[arg(
+        long,
+        value_name = "FILE",
+        num_args = 0..=1,
+        default_missing_value = "clash.yaml",
+        help_heading = "Вывод"
+    )]
+    pub clash: Option<String>,
+
+    /// В Clash-конфиге не создавать группы по странам
+    #[arg(long = "clash-no-country", help_heading = "Вывод")]
+    pub clash_no_country: bool,
+
+    /// В Clash-конфиге не создавать группы-категории (Telegram/AI/YouTube/Игры)
+    #[arg(long = "clash-no-categories", help_heading = "Вывод")]
+    pub clash_no_categories: bool,
+
     // --------------------------- Ядро (xray) ---------------------------
     /// Путь к ядру (xray)
     #[arg(long, default_value = "xray.exe", help_heading = "Ядро (xray)")]
