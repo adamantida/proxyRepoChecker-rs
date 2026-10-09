@@ -7,10 +7,10 @@ use futures::stream::{self, StreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
 use regex::Regex;
 use serde_json::{json, Value};
-use std::io::{Cursor, Read};
+use std::io::{Cursor, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -190,6 +190,7 @@ pub struct Checker {
     base_port: u16,
     next: AtomicU16,
     bad_re: Regex,
+    bad_outbounds: AtomicUsize,
 }
 
 async fn port_open(port: u16) -> bool {
@@ -234,7 +235,13 @@ impl Checker {
                 r#"(?i)failed to build outbound config with tag\s*[:=]?\s*["']?(out_\d+)"#,
             )
             .unwrap(),
+            bad_outbounds: AtomicUsize::new(0),
         }))
+    }
+
+    /// Сколько битых outbound было убрано в фазе скорости.
+    pub fn bad_outbounds(&self) -> usize {
+        self.bad_outbounds.load(Ordering::Relaxed)
     }
 
     async fn alloc_port(&self) -> u16 {
@@ -310,17 +317,45 @@ impl Checker {
             if proxies.is_empty() {
                 return Vec::new();
             }
+            let total = proxies.len();
             let chunks: Vec<Vec<Proxy>> = proxies
                 .chunks(batch.max(1))
                 .map(|c| c.to_vec())
                 .collect();
-            let pb = ProgressBar::new(chunks.len() as u64).with_style(
+            let pb = ProgressBar::new(total as u64).with_style(
                 ProgressStyle::with_template(&format!(
-                    "{{spinner:.green}} {label} {{pos}}/{{len}} батчей [{{elapsed_precise}}<{{eta_precise}}]"
+                    "{{spinner:.green}} {label} {{pos}}/{{len}} прокси [{{elapsed_precise}}<{{eta_precise}}]"
                 ))
                 .unwrap_or_else(|_| ProgressStyle::default_bar()),
             );
             let all_good: Arc<Mutex<Vec<Proxy>>> = Arc::new(Mutex::new(Vec::new()));
+            let start = Instant::now();
+            let is_tty = std::io::stderr().is_terminal();
+
+            // В не-TTY (CI) indicatif ничего не рисует — печатаем прогресс раз в минуту.
+            let reporter = if is_tty {
+                None
+            } else {
+                let pb = pb.clone();
+                let good = Arc::clone(&all_good);
+                Some(tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(Duration::from_secs(60));
+                    loop {
+                        tick.tick().await;
+                        let pos = pb.position();
+                        let len = pb.length().unwrap_or(0);
+                        let good = good.lock().unwrap().len();
+                        println!(
+                            ">> {}",
+                            progress_line(pos, len, start.elapsed().as_secs_f64(), good)
+                        );
+                        if len > 0 && pos >= len {
+                            break;
+                        }
+                    }
+                }))
+            };
+
             let nested: Vec<Vec<Proxy>> = stream::iter(chunks)
                 .map(|chunk| {
                     let this = Arc::clone(&this);
@@ -329,8 +364,7 @@ impl Checker {
                     let all_good = Arc::clone(&all_good);
                     let good_path = good_path.clone();
                     async move {
-                        let res = this.run_stage(chunk, opts).await;
-                        pb.inc(1);
+                        let res = this.run_stage(chunk, opts, pb.clone()).await;
                         if let Some(path) = &good_path {
                             if !res.is_empty() {
                                 let mut g = all_good.lock().unwrap();
@@ -353,6 +387,16 @@ impl Checker {
                 .collect()
                 .await;
             pb.finish_and_clear();
+            if let Some(h) = reporter {
+                h.abort();
+            }
+            if !is_tty {
+                let good = all_good.lock().unwrap().len();
+                println!(
+                    ">> {}",
+                    progress_line(total as u64, total as u64, start.elapsed().as_secs_f64(), good)
+                );
+            }
             nested.into_iter().flatten().collect()
         })
     }
@@ -361,12 +405,14 @@ impl Checker {
         self: &Arc<Self>,
         items: Vec<Proxy>,
         opts: SpeedOpts,
+        pb: ProgressBar,
     ) -> BoxFuture<'static, Vec<Proxy>> {
         let this = Arc::clone(self);
         Box::pin(async move {
             if items.is_empty() {
                 return Vec::new();
             }
+            let total_items = items.len() as u64;
             let mut mapping: Vec<(Proxy, u16)> = Vec::with_capacity(items.len());
             for p in items {
                 let port = this.alloc_port().await;
@@ -379,11 +425,13 @@ impl Checker {
                 Ok(b) => b,
                 Err(e) => {
                     eprintln!("[ошибка] сериализация batch-конфига: {e}");
+                    pb.inc(total_items);
                     return Vec::new();
                 }
             };
             if let Err(e) = std::fs::write(&cfg_path, bytes) {
                 eprintln!("[ошибка] запись {}: {e}", cfg_path.display());
+                pb.inc(total_items);
                 return Vec::new();
             }
 
@@ -405,6 +453,7 @@ impl Checker {
                 Err(e) => {
                     eprintln!("[ошибка] не удалось запустить ядро: {e}");
                     let _ = std::fs::remove_file(&cfg_path);
+                    pb.inc(total_items);
                     return Vec::new();
                 }
             };
@@ -417,13 +466,14 @@ impl Checker {
                     Ok(Some(_)) => {
                         let text = read_output(child).await;
                         let _ = std::fs::remove_file(&cfg_path);
-                        return Checker::handle_failure(&this, &text, mapping, opts).await;
+                        return Checker::handle_failure(&this, &text, mapping, opts, pb.clone()).await;
                     }
                     Ok(None) => {}
                     Err(e) => {
                         eprintln!("[ошибка] try_wait: {e}");
                         let _ = child.kill().await;
                         let _ = std::fs::remove_file(&cfg_path);
+                        pb.inc(total_items);
                         return Vec::new();
                     }
                 }
@@ -441,7 +491,7 @@ impl Checker {
                 let _ = child.kill().await;
                 let text = read_output(child).await;
                 let _ = std::fs::remove_file(&cfg_path);
-                return Checker::handle_failure(&this, &text, mapping, opts).await;
+                return Checker::handle_failure(&this, &text, mapping, opts, pb.clone()).await;
             }
 
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -450,6 +500,7 @@ impl Checker {
             let results: Vec<Proxy> = stream::iter(mapping)
                 .map(|(p, port)| {
                     let opts = opts.clone();
+                    let pb = pb.clone();
                     async move {
                         let kbs = speed::measure(
                             port,
@@ -459,6 +510,7 @@ impl Checker {
                             opts.max_mb,
                         )
                         .await;
+                        pb.inc(1);
                         if kbs + f64::EPSILON >= opts.min_kb {
                             let mut p = p;
                             p.speed_kbs = kbs;
@@ -484,16 +536,18 @@ impl Checker {
         log: &str,
         mapping: Vec<(Proxy, u16)>,
         opts: SpeedOpts,
+        pb: ProgressBar,
     ) -> Vec<Proxy> {
         if let Some(caps) = this.bad_re.captures(log) {
             let tag = caps[1].to_string();
             if let Ok(port) = tag.trim_start_matches("out_").parse::<u16>() {
                 if let Some(pos) = mapping.iter().position(|(_, p)| *p == port) {
-                    println!("   [батч] убран битый outbound {tag}");
+                    this.bad_outbounds.fetch_add(1, Ordering::Relaxed);
+                    pb.inc(1);
                     let mut rest = mapping;
                     rest.remove(pos);
                     let items = rest.into_iter().map(|(p, _)| p).collect();
-                    return this.run_stage(items, opts).await;
+                    return this.run_stage(items, opts, pb).await;
                 }
             }
         }
@@ -502,14 +556,84 @@ impl Checker {
             let left: Vec<Proxy> = mapping[..mid].iter().map(|(p, _)| p.clone()).collect();
             let right: Vec<Proxy> = mapping[mid..].iter().map(|(p, _)| p.clone()).collect();
             let (a, b) = tokio::join!(
-                this.run_stage(left, opts.clone()),
-                this.run_stage(right, opts)
+                this.run_stage(left, opts.clone(), pb.clone()),
+                this.run_stage(right, opts, pb)
             );
             let mut out = a;
             out.extend(b);
             out
         } else {
+            pb.inc(1);
             Vec::new()
         }
+    }
+}
+
+/// Форматирует секунды как `ЧЧ:ММ:СС`.
+fn fmt_hms(secs: f64) -> String {
+    let total = secs.max(0.0) as u64;
+    format!(
+        "{:02}:{:02}:{:02}",
+        total / 3600,
+        (total % 3600) / 60,
+        total % 60
+    )
+}
+
+/// Строка периодического прогресса: `[done/total] прошло | осталось | good N`.
+fn progress_line(pos: u64, len: u64, elapsed_s: f64, good: usize) -> String {
+    let width = len.to_string().len().max(1);
+    let eta = if len > pos {
+        let rate = pos as f64 / elapsed_s.max(f64::EPSILON);
+        if rate > 0.0 {
+            format!("~{}", fmt_hms((len - pos) as f64 / rate))
+        } else {
+            "~--:--:--".to_string()
+        }
+    } else {
+        "00:00:00".to_string()
+    };
+    format!(
+        "[{:>width$}/{}] прошло {} | осталось {} | good {}",
+        pos,
+        len,
+        fmt_hms(elapsed_s),
+        eta,
+        good,
+        width = width
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_duration() {
+        assert_eq!(fmt_hms(0.0), "00:00:00");
+        assert_eq!(fmt_hms(3661.0), "01:01:01");
+        assert_eq!(fmt_hms(59.9), "00:00:59");
+    }
+
+    #[test]
+    fn progress_line_has_counts_and_eta() {
+        let line = progress_line(50, 100, 10.0, 3);
+        assert!(line.starts_with("[ 50/100]"), "{line}");
+        assert!(line.contains("прошло 00:00:10"), "{line}");
+        assert!(line.contains("осталось ~00:00:10"), "{line}");
+        assert!(line.ends_with("good 3"), "{line}");
+    }
+
+    #[test]
+    fn progress_line_start_has_unknown_eta() {
+        let line = progress_line(0, 100, 0.0, 0);
+        assert!(line.starts_with("[  0/100]"), "{line}");
+        assert!(line.contains("осталось ~--:--:--"), "{line}");
+    }
+
+    #[test]
+    fn progress_line_done_has_zero_eta() {
+        let line = progress_line(100, 100, 42.0, 7);
+        assert!(line.contains("осталось 00:00:00"), "{line}");
     }
 }

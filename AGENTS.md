@@ -33,12 +33,15 @@
   `httpupgrade` (как `ws`+`v2ray-http-upgrade`), `xhttp`, `kcp` (best-effort).
   Reality: `reality-opts.public-key` = xray `realitySettings.password`.
   **trojan** → ключ `sni`; **vmess/vless** → `servername`. Неизвестный proto — `skipped`.
-- Группы: `🚀 Прокси`(select), `⚡ Авто`(url-test), `⚖️ Баланс`(load-balance),
+- Порядок групп: `🚀 Прокси`(select), `⚡ Авто`(url-test), `⚖️ Баланс`(load-balance),
   `🌍 Страны`(select — ручная группа со всеми странами), `🔓 Заблокированные`(select),
-  страны `🇽🇽 XX`(url-test), `🌐 Прочие` (XX/неопределённые). Псевдо-страны из geoip.dat
-  (типа `CLOUDFLARE` → `☁️`, `RU-BLOCKED` → `🔒`, прочие теги → `🏳️`) получают
-  собственные группы наравне со странами. Категории: `💬 Telegram`/`🤖 AI`/`📺 YouTube`/`🎮 Игры`.
+  `🟢 Напрямую`(select, первый пункт `DIRECT`; сюда идут русские правила, чтобы можно было
+  вручную увести русский трафик на прокси), затем категории `💬 Telegram`/`🤖 AI`/`📺 YouTube`/`🎮 Игры`,
+  и только в самом конце — группы стран. Страны `🇽🇽 XX`(url-test), `🌐 Прочие` (XX/неопределённые).
+  Псевдо-страны из geoip.dat (типа `CLOUDFLARE` → `☁️`, `RU-BLOCKED` → `🔒`, прочие теги → `🏳️`)
+  получают собственные группы наравне со странами.
 - Правила и глобальные секции (dns/sniffer/profile/…) — `proxy-clash/src/rules.rs`.
+  `PROCESS-NAME`-правил нет; `GEOSITE,CATEGORY-BANK-RU`/`category-ru`/`GEOIP,RU` идут в `🟢 Напрямую`.
 
 ## Пайплайн и файлы
 - `fetch → parse+dedup → GeoIP → TCP ping → xray speed → outputs`.
@@ -52,6 +55,9 @@
 - **Кириллица**: НЕ редактировать исходники через PowerShell `Get-Content`/`Set-Content`
   (портит UTF-8, добавляет BOM). Только инструменты edit/write.
 - Прогресс-бары (`indicatif`) видны только в реальном TTY; в файл/через pipe их нет.
+  Для не-TTY фаза скорости печатает строку прогресса раз в минуту
+  (`[done/total] прошло | осталось | good N`); битые outbound не логируются построчно
+  (только суммарно «битых outbound» в сводке).
 - Файлы валидный UTF-8; в PowerShell-консоли с ограниченной кодировкой видны как mojibake —
   это артефакт вывода, не порча файла.
 - `.proxy_runtime/` — временная папка xray (батч-конфиги); `target/release/{xray,geoip.dat}`

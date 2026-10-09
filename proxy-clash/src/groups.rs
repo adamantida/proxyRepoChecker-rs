@@ -1,7 +1,8 @@
-//! proxy-groups: 🚀 Прокси / ⚡ Авто / ⚖️ Баланс / 🌍 Страны / 🔓 Заблокированные,
-//! группы по странам (включая псевдо-страны вроде Cloudflare/RU-BLOCKED) и категории.
+//! proxy-groups: 🚀 Прокси / ⚡ Авто / ⚖️ Баланс / 🌍 Страны / 🔓 Заблокированные /
+//! 🟢 Напрямую, затем категории (Telegram/AI/YouTube/Игры) и в конце группы по
+//! странам (включая псевдо-страны вроде Cloudflare/RU-BLOCKED).
 
-use crate::{num, put, str_val, Options};
+use crate::{num, put, str_val, Options, DIRECT_GROUP};
 use serde_yaml_ng::{Mapping, Value as Yaml};
 use std::collections::BTreeMap;
 
@@ -55,22 +56,26 @@ pub fn build(entries: &[Entry], opt: &Options) -> (Vec<Yaml>, usize) {
     }
     groups.push(select(BLOCKED, blocked_members));
 
-    groups.extend(country_groups);
+    // Базовый набор селекторов, общий для «Напрямую» и категорий.
+    let mut base = vec![str_val(MAIN), str_val(AUTO), str_val(BALANCE)];
+    if has_countries {
+        base.push(str_val(COUNTRIES));
+    }
+    base.push(str_val(BLOCKED));
+
+    // 🟢 Напрямую: ручной маршрут (DIRECT по умолчанию).
+    let mut direct_members = vec![str_val("DIRECT")];
+    direct_members.extend(base.clone());
+    groups.push(select(DIRECT_GROUP, direct_members));
 
     if opt.include_categories {
-        let mut base = vec![
-            str_val(MAIN),
-            str_val(AUTO),
-            str_val(BALANCE),
-        ];
-        if has_countries {
-            base.push(str_val(COUNTRIES));
-        }
-        base.push(str_val(BLOCKED));
         for name in CATEGORIES {
             groups.push(select(name, base.clone()));
         }
     }
+
+    // Страны — в самом низу (их выбирают редко).
+    groups.extend(country_groups);
 
     (groups, countries)
 }
@@ -186,8 +191,41 @@ mod tests {
         let (groups, countries) = build(&entries(), &Options::default());
         // 🇩🇪 DE + ☁️ CLOUDFLARE + 🌐 Прочие (XX)
         assert_eq!(countries, 3);
-        // 🚀 + ⚡ + ⚖️ + 🌍 Страны + 🔓 + 3 страны + 4 категории
-        assert_eq!(groups.len(), 5 + 3 + 4);
+        // 🚀 + ⚡ + ⚖️ + 🌍 Страны + 🔓 + 🟢 Напрямую + 3 страны + 4 категории
+        assert_eq!(groups.len(), 6 + 3 + 4);
+    }
+
+    #[test]
+    fn direct_group_is_manual_and_first_is_direct() {
+        let (groups, _) = build(&entries(), &Options::default());
+        let g = groups
+            .iter()
+            .find(|g| g.get("name").and_then(|n| n.as_str()) == Some(DIRECT_GROUP))
+            .expect("нет группы 🟢 Напрямую");
+        assert_eq!(g.get("type").and_then(|t| t.as_str()), Some("select"));
+        let members: Vec<&str> = g
+            .get("proxies")
+            .and_then(|p| p.as_sequence())
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(members.first().copied(), Some("DIRECT"));
+        assert!(members.contains(&"🚀 Прокси"));
+        assert!(members.contains(&"🔓 Заблокированные"));
+    }
+
+    #[test]
+    fn categories_come_before_country_groups() {
+        let (groups, _) = build(&entries(), &Options::default());
+        let idx = |name: &str| {
+            groups
+                .iter()
+                .position(|g| g.get("name").and_then(|n| n.as_str()) == Some(name))
+                .unwrap_or_else(|| panic!("нет группы {name}"))
+        };
+        assert!(idx("💬 Telegram") < idx("☁️ CLOUDFLARE"));
+        assert!(idx(DIRECT_GROUP) < idx("💬 Telegram"));
     }
 
     #[test]
@@ -260,9 +298,12 @@ mod tests {
             },
         );
         assert_eq!(countries, 0);
-        assert_eq!(groups.len(), 4);
+        assert_eq!(groups.len(), 5);
         assert!(groups
             .iter()
             .all(|g| g.get("name").and_then(|n| n.as_str()) != Some("🌍 Страны")));
+        assert!(groups
+            .iter()
+            .any(|g| g.get("name").and_then(|n| n.as_str()) == Some(DIRECT_GROUP)));
     }
 }
