@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const UA: &str = "Mozilla/5.0 (proxy-rs)";
 
-fn core_bin_name() -> &'static str {
+pub fn core_bin_name() -> &'static str {
     if cfg!(windows) {
         "xray.exe"
     } else {

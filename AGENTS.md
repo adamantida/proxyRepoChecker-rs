@@ -54,5 +54,15 @@
 - Прогресс-бары (`indicatif`) видны только в реальном TTY; в файл/через pipe их нет.
 - Файлы валидный UTF-8; в PowerShell-консоли с ограниченной кодировкой видны как mojibake —
   это артефакт вывода, не порча файла.
-- `.proxy_runtime/` — временная папка xray (батч-конфиги); `target/release/{xray.exe,geoip.dat}`
-  — кэш рантайма.
+- `.proxy_runtime/` — временная папка xray (батч-конфиги); `target/release/{xray,geoip.dat}`
+  — кэш рантайма (имя ядра зависит от ОС: `xray`/`xray.exe`, см. `xray::core_bin_name()`).
+
+## CI (GitHub Actions)
+- Workflow `.github/workflows/clash.yml`: cron `17 */2 * * *` + `workflow_dispatch`.
+- Runner `ubuntu-latest`; `permissions: contents: write`; `concurrency: clash-gen`; `timeout 120`.
+- Собирает `--release`, гоняет `--set all --shuffle --limit 2000 --min-kb 100`, генерирует
+  `out/clash.yaml` (+`alive.txt`/`good.txt`/`dead.txt`), затем пушит их в ветку **`dist`**
+  (один свежий коммит, force-push — ветка чисто генерируемая).
+- Подписка: `https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/clash.yaml`.
+- Кэшируются `target/release/xray` и `geoip.dat` (не перекачивать каждый прогон).
+- `reqwest` использует `rustls-tls` (без системного OpenSSL) — важно для сборки на Ubuntu.
