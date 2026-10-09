@@ -26,7 +26,7 @@ jobs:
     timeout-minutes: 120
     env:
       SET: ${{ github.event.inputs.set || 'all' }}
-      LIMIT: ${{ github.event.inputs.limit || '2000' }}
+      LIMIT: ${{ github.event.inputs.limit || '10000' }}
 
     steps:
       - uses: actions/checkout@v4

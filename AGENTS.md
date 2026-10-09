@@ -60,7 +60,7 @@
 ## CI (GitHub Actions)
 - Workflow `.github/workflows/clash.yml`: cron `17 */2 * * *` + `workflow_dispatch`.
 - Runner `ubuntu-latest`; `permissions: contents: write`; `concurrency: clash-gen`; `timeout 120`.
-- Собирает `--release`, гоняет `--set all --shuffle --limit 2000 --min-kb 100`, генерирует
+- Собирает `--release`, гоняет `--set all --shuffle --limit 10000 --min-kb 100`, генерирует
   `out/clash.yaml` (+`alive.txt`/`good.txt`/`dead.txt`), затем пушит их в ветку **`dist`**
   (один свежий коммит, force-push — ветка чисто генерируемая).
 - Подписка: `https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/clash.yaml`.
