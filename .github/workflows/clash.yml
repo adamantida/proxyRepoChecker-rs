@@ -11,7 +11,7 @@ on:
         default: "all"
       limit:
         description: "Лимит прокси до проверок"
-        default: "30000"
+        default: "50000"
 
 permissions:
   contents: write
@@ -57,7 +57,7 @@ jobs:
             --set "$SET" \
             --shuffle \
             --limit "$LIMIT" \
-            --min-kb 100 \
+            --min-kb 500 \
             --clash out/clash.yaml \
             --output out/alive.txt \
             --good-output out/good.txt \
