@@ -105,6 +105,7 @@ struct Summary {
     median_kbs: f64,
     alive_file: Option<(String, usize)>,
     good_file: Option<(String, usize)>,
+    clash_file: Option<(String, usize)>,
     dead_file: Option<(String, usize)>,
     raw_file: Option<(String, usize)>,
     parsed_file: Option<(String, usize)>,
@@ -198,6 +199,7 @@ fn print_summary(s: &Summary) {
         s.parsed_file.as_ref(),
         s.alive_file.as_ref(),
         s.good_file.as_ref(),
+        s.clash_file.as_ref(),
         s.dead_file.as_ref(),
     ]
     .into_iter()
@@ -570,6 +572,50 @@ async fn main() -> anyhow::Result<()> {
             sorted[mid]
         };
     }
+
+    // ------------------------------------------------------------------
+    // 8. Clash/mihomo конфиг из good-прокси
+    // ------------------------------------------------------------------
+    if let Some(path) = &cli.clash {
+        if good.is_empty() {
+            info!("Clash: пропуск — нет прокси, прошедших порог скорости");
+        } else {
+            let sources: Vec<proxy_clash::Source> = good
+                .iter()
+                .map(|p| proxy_clash::Source {
+                    proto: p.proto.to_string(),
+                    name: if p.display.is_empty() {
+                        p.name.clone()
+                    } else {
+                        p.display.clone()
+                    },
+                    server: p.host.clone(),
+                    port: p.port,
+                    country: p.country.clone(),
+                    settings: p.settings.clone(),
+                    stream: p.stream.clone(),
+                })
+                .collect();
+            let opts = proxy_clash::Options {
+                include_country: !cli.clash_no_country,
+                include_categories: !cli.clash_no_categories,
+            };
+            let (text, report) = proxy_clash::render(&sources, &opts)?;
+            output::write_text_atomic(path, &text)?;
+            if report.skipped > 0 {
+                info!(
+                    "Clash: пропущено неподдерживаемых протоколов: {}",
+                    report.skipped
+                );
+            }
+            info!(
+                ">> Сохранено: {} ({} прокси, групп {}, стран {})",
+                path, report.proxies, report.groups, report.countries
+            );
+            sum.clash_file = Some((path.clone(), report.proxies));
+        }
+    }
+
     sum.total_secs = started.elapsed().as_secs_f64();
 
     info!(
