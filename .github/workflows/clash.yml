@@ -3,7 +3,7 @@ name: clash-config
 on:
   schedule:
     # Каждые 2 часа (со смещением от начала часа)
-    - cron: "17 */2 * * *"
+    - cron: "0 */1 * * *"
   workflow_dispatch:
     inputs:
       set:
@@ -11,7 +11,7 @@ on:
         default: "all"
       limit:
         description: "Лимит прокси до проверок"
-        default: "10000"
+        default: "30000"
 
 permissions:
   contents: write
