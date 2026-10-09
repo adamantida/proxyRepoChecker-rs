@@ -80,6 +80,14 @@ pub struct Cli {
     #[arg(short = 's', long, help_heading = "Вывод")]
     pub shuffle: bool,
 
+    /// Сырые тексты загруженных источников (сохраняется после загрузки)
+    #[arg(long = "raw-output", default_value = "raw.txt", help_heading = "Вывод")]
+    pub raw_output: String,
+
+    /// Уникальные прокси до проверок (сохраняется после парсинга и GeoIP)
+    #[arg(long = "parsed-output", default_value = "parsed.txt", help_heading = "Вывод")]
+    pub parsed_output: String,
+
     // --------------------------- Ядро (xray) ---------------------------
     /// Путь к ядру (xray)
     #[arg(long, default_value = "xray.exe", help_heading = "Ядро (xray)")]
@@ -104,6 +112,14 @@ pub struct Cli {
     /// Сколько секунд ждать старт ядра
     #[arg(long = "core-start-timeout", default_value_t = 8.0, help_heading = "Ядро (xray)")]
     pub core_start_timeout: f64,
+
+    /// URL для скачивания ядра (по умолчанию — релиз XTLS/Xray-core под текущую ОС)
+    #[arg(long = "xray-url", value_name = "URL", help_heading = "Ядро (xray)")]
+    pub xray_url: Option<String>,
+
+    /// Не скачивать ядро автоматически (ошибка, если его нет)
+    #[arg(long = "no-xray-download", help_heading = "Ядро (xray)")]
+    pub no_xray_download: bool,
 
     // ---------------------- TCP ping (префильтр) -----------------------
     /// Выключить TCP ping префильтр

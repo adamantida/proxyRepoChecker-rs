@@ -1,19 +1,177 @@
 use crate::cli::Cli;
 use crate::parse::Proxy;
 use crate::speed;
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use futures::future::BoxFuture;
 use futures::stream::{self, StreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
 use regex::Regex;
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::io::{Cursor, Read};
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU16, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const UA: &str = "Mozilla/5.0 (proxy-rs)";
+
+fn core_bin_name() -> &'static str {
+    if cfg!(windows) {
+        "xray.exe"
+    } else {
+        "xray"
+    }
+}
+
+fn asset_name() -> Result<&'static str> {
+    use std::env::consts::{ARCH, OS};
+    Ok(match (OS, ARCH) {
+        ("windows", "x86_64") => "Xray-windows-64.zip",
+        ("windows", "aarch64") => "Xray-windows-arm64-v8a.zip",
+        ("linux", "x86_64") => "Xray-linux-64.zip",
+        ("linux", "aarch64") => "Xray-linux-arm64-v8a.zip",
+        ("macos", "x86_64") => "Xray-macos-64.zip",
+        ("macos", "aarch64") => "Xray-macos-arm64-v8a.zip",
+        _ => bail!("неподдерживаемая платформа для автозагрузки xray: {OS}/{ARCH}"),
+    })
+}
+
+/// URL релиза Xray-core под текущую ОС/архитектуру.
+pub fn default_xray_url() -> Result<String> {
+    Ok(format!(
+        "https://github.com/XTLS/Xray-core/releases/latest/download/{}",
+        asset_name()?
+    ))
+}
+
+/// Проверяет, что файл — рабочее ядро (запускается `version` и содержит «Xray»).
+pub fn valid_core(path: &Path) -> bool {
+    let ok_size = std::fs::metadata(path)
+        .map(|m| m.len() > 1_000_000)
+        .unwrap_or(false);
+    if !ok_size {
+        return false;
+    }
+    let mut cmd = std::process::Command::new(path);
+    cmd.arg("version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    match cmd.output() {
+        Ok(out) => {
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+            out.status.success() && text.to_lowercase().contains("xray")
+        }
+        Err(_) => false,
+    }
+}
+
+/// Гарантирует наличие рабочего ядра: скачивает и распаковывает при необходимости.
+pub async fn ensure_core(path: &Path, url: Option<&str>, no_download: bool) -> Result<()> {
+    if valid_core(path) {
+        return Ok(());
+    }
+    if no_download {
+        bail!(
+            "не найдено рабочее ядро xray: {} (автозагрузка отключена --no-xray-download)",
+            path.display()
+        );
+    }
+    let url = match url {
+        Some(u) => u.to_string(),
+        None => default_xray_url()?,
+    };
+    println!(">> xray: качаю ядро -> {}", path.display());
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).ok();
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .user_agent(UA)
+        .build()
+        .context("reqwest client")?;
+    let resp = client
+        .get(&url)
+        .timeout(Duration::from_secs(120))
+        .send()
+        .await
+        .with_context(|| format!("не удалось скачать {url}"))?
+        .error_for_status()
+        .context("ошибка ответа при скачивании xray")?;
+
+    let total = resp.content_length();
+    let pb = ProgressBar::new(total.unwrap_or(0));
+    pb.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.green} xray {bytes}/{total_bytes} [{elapsed_precise}<{eta_precise}] {binary_bytes_per_sec}",
+        )
+        .unwrap_or_else(|_| ProgressStyle::default_bar()),
+    );
+
+    let mut resp = resp;
+    let mut bytes: Vec<u8> = Vec::with_capacity(total.unwrap_or(0) as usize);
+    while let Some(chunk) = resp.chunk().await.context("тело ответа xray")? {
+        bytes.extend_from_slice(&chunk);
+        pb.inc(chunk.len() as u64);
+    }
+    pb.finish_and_clear();
+
+    if bytes.len() < 1_000_000 {
+        bail!("скачан подозрительно маленький архив xray ({} байт)", bytes.len());
+    }
+
+    let mut archive =
+        zip::ZipArchive::new(Cursor::new(bytes)).context("не удалось прочитать zip с xray")?;
+    let want = core_bin_name();
+    let mut found: Option<Vec<u8>> = None;
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).context("чтение записи zip")?;
+        let name = entry.name().to_string();
+        let fname = name.rsplit(['/', '\\']).next().unwrap_or(&name);
+        if fname == want {
+            let mut buf = Vec::new();
+            entry.read_to_end(&mut buf).context("чтение xray из архива")?;
+            found = Some(buf);
+            break;
+        }
+    }
+    let bin = found.ok_or_else(|| anyhow::anyhow!("в архиве не найден {want}"))?;
+    if bin.len() < 1_000_000 {
+        bail!("xray в архиве подозрительно маленький ({} байт)", bin.len());
+    }
+
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, &bin).with_context(|| format!("не удалось записать {}", tmp.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(&tmp) {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o755);
+            let _ = std::fs::set_permissions(&tmp, perms);
+        }
+    }
+    std::fs::rename(&tmp, path).with_context(|| format!("не удалось заменить {}", path.display()))?;
+
+    if !valid_core(path) {
+        bail!("скачанное ядро не запускается: {}", path.display());
+    }
+    println!(">> xray: готово {}", path.display());
+    Ok(())
+}
 
 #[derive(Clone)]
 pub struct SpeedOpts {
@@ -144,6 +302,7 @@ impl Checker {
         workers: usize,
         opts: SpeedOpts,
         label: &str,
+        good_path: Option<String>,
     ) -> BoxFuture<'static, Vec<Proxy>> {
         let this = Arc::clone(self);
         let label = label.to_string();
@@ -161,14 +320,32 @@ impl Checker {
                 ))
                 .unwrap_or_else(|_| ProgressStyle::default_bar()),
             );
+            let all_good: Arc<Mutex<Vec<Proxy>>> = Arc::new(Mutex::new(Vec::new()));
             let nested: Vec<Vec<Proxy>> = stream::iter(chunks)
                 .map(|chunk| {
                     let this = Arc::clone(&this);
                     let pb = pb.clone();
                     let opts = opts.clone();
+                    let all_good = Arc::clone(&all_good);
+                    let good_path = good_path.clone();
                     async move {
                         let res = this.run_stage(chunk, opts).await;
                         pb.inc(1);
+                        if let Some(path) = &good_path {
+                            if !res.is_empty() {
+                                let mut g = all_good.lock().unwrap();
+                                g.extend(res.iter().cloned());
+                                let mut sorted = g.clone();
+                                sorted.sort_by(|a, b| {
+                                    b.speed_kbs
+                                        .partial_cmp(&a.speed_kbs)
+                                        .unwrap_or(std::cmp::Ordering::Equal)
+                                });
+                                let lines: Vec<String> =
+                                    sorted.iter().map(|p| crate::output::line(p, true)).collect();
+                                let _ = crate::output::write_lines_atomic(path, &lines);
+                            }
+                        }
                         res
                     }
                 })

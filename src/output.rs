@@ -9,13 +9,15 @@ pub fn line(p: &Proxy, rename: bool) -> String {
     }
 }
 
-pub fn write_lines(path: &str, lines: &[String]) -> Result<()> {
+pub fn write_lines_atomic(path: &str, lines: &[String]) -> Result<()> {
     let mut out = String::with_capacity(lines.len() * 160);
     for l in lines {
         out.push_str(l);
         out.push('\n');
     }
-    std::fs::write(path, out).with_context(|| format!("не удалось записать {path}"))?;
+    let tmp = format!("{path}.tmp");
+    std::fs::write(&tmp, out).with_context(|| format!("не удалось записать {tmp}"))?;
+    std::fs::rename(&tmp, path).with_context(|| format!("не удалось заменить {path}"))?;
     Ok(())
 }
 

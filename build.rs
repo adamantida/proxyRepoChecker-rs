@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 
-const ASSETS: [&str; 2] = ["xray.exe", "sources.json"];
+const ASSETS: [&str; 1] = ["sources.json"];
 
 fn main() {
     for a in ASSETS {
@@ -10,10 +10,6 @@ fn main() {
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let bin_dir = manifest_dir.join("bin");
-
-    if !bin_dir.join("xray.exe").exists() {
-        println!("cargo:warning=bin/xray.exe не найден — сборка без ядра");
-    }
 
     let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".into());
     let out_dir = env::var("OUT_DIR").unwrap_or_default();
