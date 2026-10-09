@@ -2,7 +2,7 @@ name: clash-config
 
 on:
   schedule:
-    # Каждые 2 часа (со смещением от начала часа)
+    # Запуск каждый час в 00 минут (UTC)
     - cron: "0 * * * *"
   workflow_dispatch:
     inputs:
@@ -37,13 +37,17 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Set cache date
+        id: cache-date
+        run: echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
       - name: Cache xray + geoip
         uses: actions/cache@v4
         with:
           path: |
             target/release/xray
             target/release/geoip.dat
-          key: ${{ runner.os }}-core-${{ github.run_id }}
+          key: ${{ runner.os }}-core-${{ steps.cache-date.outputs.date }}
           restore-keys: |
             ${{ runner.os }}-core-
 
