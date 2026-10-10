@@ -1,0 +1,2939 @@
+# Сгенерировано proxy-rs (proxy-clash)
+# прокси: 168 | групп: 39 | стран: 29
+mode: rule
+ipv6: false
+log-level: info
+allow-lan: false
+unified-delay: true
+tcp-concurrent: true
+external-controller: 127.0.0.1:9090
+dns:
+  enable: true
+  listen: 0.0.0.0:1053
+  ipv6: false
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  fake-ip-filter:
+  - '*.lan'
+  - '*.local'
+  - localhost.ptlogin2.qq.com
+  default-nameserver:
+  - 223.5.5.5
+  - 8.8.8.8
+  nameserver:
+  - https://cloudflare-dns.com/dns-query
+  - https://dns.google/dns-query
+  - tls://8.8.8.8
+  nameserver-policy:
+    geosite:category-ru: https://dns.alidns.com/dns-query
+    geosite:RU-BLOCKED: https://cloudflare-dns.com/dns-query
+keep-alive-idle: 600
+keep-alive-interval: 30
+profile:
+  store-selected: true
+  store-fake-ip: true
+sniffer:
+  enable: true
+  sniff:
+    HTTP:
+      ports:
+      - '80'
+      - 8080-8880
+      override-destination: true
+    TLS:
+      ports:
+      - '443'
+      - '8443'
+    QUIC:
+      ports:
+      - '443'
+      - '8443'
+  skip-domain:
+  - Mijia Cloud
+  - dlg.io.mi.com
+proxy-groups:
+- name: 🚀 Прокси
+  type: select
+  proxies:
+  - DIRECT
+  - ⚡ Авто
+  - ⚖️ Баланс
+  - 🌍 Страны
+  - 🔓 Заблокированные
+- name: ⚡ Авто
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[RE-FILTER] - 1031'
+  - '[RE-FILTER] - 447'
+  - '[RU-WHITELIST] - 118'
+  - '[DE] - 528'
+  - '[DE] - 293'
+  - '[RU-BLOCKED] - 939'
+  - '[US] - 1726'
+  - '[DE] - 613'
+  - '[DE] - 419'
+  - '[US] - 456'
+  - '[RE-FILTER] - 1045'
+  - '[XX] - 3568'
+  - '[RU-BLOCKED] - 5653'
+  - '[RE-FILTER] - 2135'
+  - '[RU-BLOCKED] - 5378'
+  - '[US] - 1289'
+  - '[XX] - 3206'
+  - '[RU-BLOCKED] - 6010'
+  - '[US] - 927'
+  - '[NL] - 431'
+  - '[RU-BLOCKED] - 2475'
+  - '[RU-BLOCKED] - 4405'
+  - '[RU-BLOCKED] - 3755'
+  - '[RU-BLOCKED] - 4229'
+  - '[TOR] - 024'
+  - '[RU-BLOCKED] - 2967'
+  - '[RU-BLOCKED] - 5882'
+  - '[GB] - 112'
+  - '[RU-BLOCKED] - 3841'
+  - '[RU-BLOCKED] - 3999'
+  - '[GB] - 185'
+  - '[NL] - 321'
+  - '[GB] - 412'
+  - '[GB] - 252'
+  - '[PL] - 010'
+  - '[DE] - 821'
+  - '[ES] - 047'
+  - '[GB] - 397'
+  - '[RU-BLOCKED] - 4233'
+  - '[NL] - 366'
+  - '[GB] - 054'
+  - '[GB] - 380'
+  - '[XX] - 3612'
+  - '[AE] - 047'
+  - '[NL] - 034'
+  - '[IT] - 034'
+  - '[NL] - 451'
+  - '[FR] - 247'
+  - '[RE-FILTER] - 1810'
+  - '[DE] - 320'
+  - '[RU-BLOCKED] - 2842'
+  - '[RU-BLOCKED] - 027'
+  - '[DE] - 323'
+  - '[AE] - 022'
+  - '[DE] - 040'
+  - '[NL] - 396'
+  - '[PL] - 131'
+  - '[GB] - 406'
+  - '[AE] - 058'
+  - '[FR] - 047'
+  - '[RU-BLOCKED] - 5685'
+  - '[DE] - 071'
+  - '[ES] - 027'
+  - '[LV] - 049'
+  - '[PL] - 098'
+  - '[DE] - 614'
+  - '[RU-BLOCKED] - 6969'
+  - '[PL] - 123'
+  - '[ES] - 041'
+  - '[GB] - 437'
+  - '[NL] - 553'
+  - '[GB] - 260'
+  - '[NL] - 335'
+  - '[DE] - 831'
+  - '[RE-FILTER] - 1882'
+  - '[NL] - 014'
+  - '[GB] - 011'
+  - '[RO] - 023'
+  - '[EE] - 049'
+  - '[GB] - 215'
+  - '[FI] - 067'
+  - '[XX] - 4137'
+  - '[JP] - 079'
+  - '[IQ] - 004'
+  - '[RE-FILTER] - 2704'
+  - '[XX] - 1175'
+  - '[RU-BLOCKED] - 3558'
+  - '[EE] - 040'
+  - '[US] - 855'
+  - '[CH] - 037'
+  - '[GB] - 223'
+  - '[RE-FILTER] - 385'
+  - '[RU-BLOCKED] - 6900'
+  - '[DE] - 296'
+  - '[SC] - 182'
+  - '[XX] - 3439'
+  - '[NL] - 089'
+  - '[RU] - 373'
+  - '[RU] - 067'
+  - '[US] - 576'
+  - '[RE-FILTER] - 1957'
+  - '[EE] - 024'
+  - '[FI] - 134'
+  - '[US] - 986'
+  - '[BG] - 031'
+  - '[RE-FILTER] - 2474'
+  - '[KR] - 054'
+  - '[XX] - 972'
+  - '[RU-BLOCKED] - 5464'
+  - '[MY] - 003'
+  - '[DE] - 022'
+  - '[SG] - 014'
+  - '[GB] - 399'
+  - '[MY] - 009'
+  - '[CY] - 007'
+  - '[RU-BLOCKED] - 2681'
+  - '[DE] - 124'
+  - '[CY] - 050'
+  - '[DE] - 751'
+  - '[XX] - 1554'
+  - '[RU-BLOCKED] - 2976'
+  - '[RU-BLOCKED] - 814'
+  - '[XX] - 3816'
+  - '[DE] - 031'
+  - '[SG] - 144'
+  - '[DE] - 279'
+  - '[DE] - 481'
+  - '[DE] - 131'
+  - '[DE] - 761'
+  - '[DE] - 417'
+  - '[RU-BLOCKED] - 1436'
+  - '[RU-BLOCKED] - 6144'
+  - '[CY] - 042'
+  - '[RE-FILTER] - 052'
+  - '[GB] - 421'
+  - '[US] - 482'
+  - '[RU-BLOCKED] - 2287'
+  - '[RE-FILTER] - 2302'
+  - '[RU-BLOCKED] - 1182'
+  - '[RE-FILTER] - 776'
+  - '[RU-BLOCKED] - 6074'
+  - '[DE] - 300'
+  - '[NL] - 414'
+  - '[FR] - 169'
+  - '[US] - 274'
+  - '[US] - 216'
+  - '[US] - 021'
+  - '[NL] - 364'
+  - '[JP] - 055'
+  - '[US] - 1247'
+  - '[GB] - 348'
+  - '[GB] - 200'
+  - '[GB] - 303'
+  - '[NL] - 410'
+  - '[GB] - 374'
+  - '[GB] - 050'
+  - '[SG] - 175'
+  - '[GB] - 221'
+  - '[XX] - 3959'
+  - '[RE-FILTER] - 1671'
+  - '[XX] - 1766'
+  - '[RU-BLOCKED] - 3103'
+  - '[US] - 1404'
+  - '[TH] - 004'
+  - '[RU-BLOCKED] - 1274'
+  - '[RU-BLOCKED] - 2519'
+  - '[SG] - 181'
+  - '[RU-BLOCKED] - 4366'
+- name: ⚖️ Баланс
+  type: load-balance
+  strategy: consistent-hashing
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  proxies:
+  - '[RE-FILTER] - 1031'
+  - '[RE-FILTER] - 447'
+  - '[RU-WHITELIST] - 118'
+  - '[DE] - 528'
+  - '[DE] - 293'
+  - '[RU-BLOCKED] - 939'
+  - '[US] - 1726'
+  - '[DE] - 613'
+  - '[DE] - 419'
+  - '[US] - 456'
+  - '[RE-FILTER] - 1045'
+  - '[XX] - 3568'
+  - '[RU-BLOCKED] - 5653'
+  - '[RE-FILTER] - 2135'
+  - '[RU-BLOCKED] - 5378'
+  - '[US] - 1289'
+  - '[XX] - 3206'
+  - '[RU-BLOCKED] - 6010'
+  - '[US] - 927'
+  - '[NL] - 431'
+  - '[RU-BLOCKED] - 2475'
+  - '[RU-BLOCKED] - 4405'
+  - '[RU-BLOCKED] - 3755'
+  - '[RU-BLOCKED] - 4229'
+  - '[TOR] - 024'
+  - '[RU-BLOCKED] - 2967'
+  - '[RU-BLOCKED] - 5882'
+  - '[GB] - 112'
+  - '[RU-BLOCKED] - 3841'
+  - '[RU-BLOCKED] - 3999'
+  - '[GB] - 185'
+  - '[NL] - 321'
+  - '[GB] - 412'
+  - '[GB] - 252'
+  - '[PL] - 010'
+  - '[DE] - 821'
+  - '[ES] - 047'
+  - '[GB] - 397'
+  - '[RU-BLOCKED] - 4233'
+  - '[NL] - 366'
+  - '[GB] - 054'
+  - '[GB] - 380'
+  - '[XX] - 3612'
+  - '[AE] - 047'
+  - '[NL] - 034'
+  - '[IT] - 034'
+  - '[NL] - 451'
+  - '[FR] - 247'
+  - '[RE-FILTER] - 1810'
+  - '[DE] - 320'
+  - '[RU-BLOCKED] - 2842'
+  - '[RU-BLOCKED] - 027'
+  - '[DE] - 323'
+  - '[AE] - 022'
+  - '[DE] - 040'
+  - '[NL] - 396'
+  - '[PL] - 131'
+  - '[GB] - 406'
+  - '[AE] - 058'
+  - '[FR] - 047'
+  - '[RU-BLOCKED] - 5685'
+  - '[DE] - 071'
+  - '[ES] - 027'
+  - '[LV] - 049'
+  - '[PL] - 098'
+  - '[DE] - 614'
+  - '[RU-BLOCKED] - 6969'
+  - '[PL] - 123'
+  - '[ES] - 041'
+  - '[GB] - 437'
+  - '[NL] - 553'
+  - '[GB] - 260'
+  - '[NL] - 335'
+  - '[DE] - 831'
+  - '[RE-FILTER] - 1882'
+  - '[NL] - 014'
+  - '[GB] - 011'
+  - '[RO] - 023'
+  - '[EE] - 049'
+  - '[GB] - 215'
+  - '[FI] - 067'
+  - '[XX] - 4137'
+  - '[JP] - 079'
+  - '[IQ] - 004'
+  - '[RE-FILTER] - 2704'
+  - '[XX] - 1175'
+  - '[RU-BLOCKED] - 3558'
+  - '[EE] - 040'
+  - '[US] - 855'
+  - '[CH] - 037'
+  - '[GB] - 223'
+  - '[RE-FILTER] - 385'
+  - '[RU-BLOCKED] - 6900'
+  - '[DE] - 296'
+  - '[SC] - 182'
+  - '[XX] - 3439'
+  - '[NL] - 089'
+  - '[RU] - 373'
+  - '[RU] - 067'
+  - '[US] - 576'
+  - '[RE-FILTER] - 1957'
+  - '[EE] - 024'
+  - '[FI] - 134'
+  - '[US] - 986'
+  - '[BG] - 031'
+  - '[RE-FILTER] - 2474'
+  - '[KR] - 054'
+  - '[XX] - 972'
+  - '[RU-BLOCKED] - 5464'
+  - '[MY] - 003'
+  - '[DE] - 022'
+  - '[SG] - 014'
+  - '[GB] - 399'
+  - '[MY] - 009'
+  - '[CY] - 007'
+  - '[RU-BLOCKED] - 2681'
+  - '[DE] - 124'
+  - '[CY] - 050'
+  - '[DE] - 751'
+  - '[XX] - 1554'
+  - '[RU-BLOCKED] - 2976'
+  - '[RU-BLOCKED] - 814'
+  - '[XX] - 3816'
+  - '[DE] - 031'
+  - '[SG] - 144'
+  - '[DE] - 279'
+  - '[DE] - 481'
+  - '[DE] - 131'
+  - '[DE] - 761'
+  - '[DE] - 417'
+  - '[RU-BLOCKED] - 1436'
+  - '[RU-BLOCKED] - 6144'
+  - '[CY] - 042'
+  - '[RE-FILTER] - 052'
+  - '[GB] - 421'
+  - '[US] - 482'
+  - '[RU-BLOCKED] - 2287'
+  - '[RE-FILTER] - 2302'
+  - '[RU-BLOCKED] - 1182'
+  - '[RE-FILTER] - 776'
+  - '[RU-BLOCKED] - 6074'
+  - '[DE] - 300'
+  - '[NL] - 414'
+  - '[FR] - 169'
+  - '[US] - 274'
+  - '[US] - 216'
+  - '[US] - 021'
+  - '[NL] - 364'
+  - '[JP] - 055'
+  - '[US] - 1247'
+  - '[GB] - 348'
+  - '[GB] - 200'
+  - '[GB] - 303'
+  - '[NL] - 410'
+  - '[GB] - 374'
+  - '[GB] - 050'
+  - '[SG] - 175'
+  - '[GB] - 221'
+  - '[XX] - 3959'
+  - '[RE-FILTER] - 1671'
+  - '[XX] - 1766'
+  - '[RU-BLOCKED] - 3103'
+  - '[US] - 1404'
+  - '[TH] - 004'
+  - '[RU-BLOCKED] - 1274'
+  - '[RU-BLOCKED] - 2519'
+  - '[SG] - 181'
+  - '[RU-BLOCKED] - 4366'
+- name: 🌍 Страны
+  type: select
+  proxies:
+  - 🇦🇪 AE
+  - 🇧🇬 BG
+  - 🇨🇭 CH
+  - 🇨🇾 CY
+  - 🇩🇪 DE
+  - 🇪🇪 EE
+  - 🇪🇸 ES
+  - 🇫🇮 FI
+  - 🇫🇷 FR
+  - 🇬🇧 GB
+  - 🇮🇶 IQ
+  - 🇮🇹 IT
+  - 🇯🇵 JP
+  - 🇰🇷 KR
+  - 🇱🇻 LV
+  - 🇲🇾 MY
+  - 🇳🇱 NL
+  - 🇵🇱 PL
+  - 🇷🇴 RO
+  - 🇷🇺 RU
+  - 🇸🇨 SC
+  - 🇸🇬 SG
+  - 🇹🇭 TH
+  - 🇺🇸 US
+  - 🌐 Прочие
+  - 🏳️ RE-FILTER
+  - 🏳️ RU-WHITELIST
+  - 🏳️ TOR
+  - 🔒 RU-BLOCKED
+- name: 🔓 Заблокированные
+  type: select
+  proxies:
+  - ⚡ Авто
+  - ⚖️ Баланс
+  - 🌍 Страны
+- name: 🟢 Напрямую
+  type: select
+  proxies:
+  - DIRECT
+  - 🚀 Прокси
+  - ⚡ Авто
+  - ⚖️ Баланс
+  - 🌍 Страны
+  - 🔓 Заблокированные
+- name: 💬 Telegram
+  type: select
+  proxies:
+  - 🚀 Прокси
+  - ⚡ Авто
+  - ⚖️ Баланс
+  - 🌍 Страны
+  - 🔓 Заблокированные
+- name: 🤖 AI
+  type: select
+  proxies:
+  - 🚀 Прокси
+  - ⚡ Авто
+  - ⚖️ Баланс
+  - 🌍 Страны
+  - 🔓 Заблокированные
+- name: 📺 YouTube
+  type: select
+  proxies:
+  - 🚀 Прокси
+  - ⚡ Авто
+  - ⚖️ Баланс
+  - 🌍 Страны
+  - 🔓 Заблокированные
+- name: 🎮 Игры
+  type: select
+  proxies:
+  - 🚀 Прокси
+  - ⚡ Авто
+  - ⚖️ Баланс
+  - 🌍 Страны
+  - 🔓 Заблокированные
+- name: 🇦🇪 AE
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[AE] - 047'
+  - '[AE] - 022'
+  - '[AE] - 058'
+- name: 🇧🇬 BG
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[BG] - 031'
+- name: 🇨🇭 CH
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[CH] - 037'
+- name: 🇨🇾 CY
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[CY] - 007'
+  - '[CY] - 050'
+  - '[CY] - 042'
+- name: 🇩🇪 DE
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[DE] - 528'
+  - '[DE] - 293'
+  - '[DE] - 613'
+  - '[DE] - 419'
+  - '[DE] - 821'
+  - '[DE] - 320'
+  - '[DE] - 323'
+  - '[DE] - 040'
+  - '[DE] - 071'
+  - '[DE] - 614'
+  - '[DE] - 831'
+  - '[DE] - 296'
+  - '[DE] - 022'
+  - '[DE] - 124'
+  - '[DE] - 751'
+  - '[DE] - 031'
+  - '[DE] - 279'
+  - '[DE] - 481'
+  - '[DE] - 131'
+  - '[DE] - 761'
+  - '[DE] - 417'
+  - '[DE] - 300'
+- name: 🇪🇪 EE
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[EE] - 049'
+  - '[EE] - 040'
+  - '[EE] - 024'
+- name: 🇪🇸 ES
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[ES] - 047'
+  - '[ES] - 027'
+  - '[ES] - 041'
+- name: 🇫🇮 FI
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[FI] - 067'
+  - '[FI] - 134'
+- name: 🇫🇷 FR
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[FR] - 247'
+  - '[FR] - 047'
+  - '[FR] - 169'
+- name: 🇬🇧 GB
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[GB] - 112'
+  - '[GB] - 185'
+  - '[GB] - 412'
+  - '[GB] - 252'
+  - '[GB] - 397'
+  - '[GB] - 054'
+  - '[GB] - 380'
+  - '[GB] - 406'
+  - '[GB] - 437'
+  - '[GB] - 260'
+  - '[GB] - 011'
+  - '[GB] - 215'
+  - '[GB] - 223'
+  - '[GB] - 399'
+  - '[GB] - 421'
+  - '[GB] - 348'
+  - '[GB] - 200'
+  - '[GB] - 303'
+  - '[GB] - 374'
+  - '[GB] - 050'
+  - '[GB] - 221'
+- name: 🇮🇶 IQ
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[IQ] - 004'
+- name: 🇮🇹 IT
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[IT] - 034'
+- name: 🇯🇵 JP
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[JP] - 079'
+  - '[JP] - 055'
+- name: 🇰🇷 KR
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[KR] - 054'
+- name: 🇱🇻 LV
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[LV] - 049'
+- name: 🇲🇾 MY
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[MY] - 003'
+  - '[MY] - 009'
+- name: 🇳🇱 NL
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[NL] - 431'
+  - '[NL] - 321'
+  - '[NL] - 366'
+  - '[NL] - 034'
+  - '[NL] - 451'
+  - '[NL] - 396'
+  - '[NL] - 553'
+  - '[NL] - 335'
+  - '[NL] - 014'
+  - '[NL] - 089'
+  - '[NL] - 414'
+  - '[NL] - 364'
+  - '[NL] - 410'
+- name: 🇵🇱 PL
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[PL] - 010'
+  - '[PL] - 131'
+  - '[PL] - 098'
+  - '[PL] - 123'
+- name: 🇷🇴 RO
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[RO] - 023'
+- name: 🇷🇺 RU
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[RU] - 373'
+  - '[RU] - 067'
+- name: 🇸🇨 SC
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[SC] - 182'
+- name: 🇸🇬 SG
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[SG] - 014'
+  - '[SG] - 144'
+  - '[SG] - 175'
+  - '[SG] - 181'
+- name: 🇹🇭 TH
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[TH] - 004'
+- name: 🇺🇸 US
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[US] - 1726'
+  - '[US] - 456'
+  - '[US] - 1289'
+  - '[US] - 927'
+  - '[US] - 855'
+  - '[US] - 576'
+  - '[US] - 986'
+  - '[US] - 482'
+  - '[US] - 274'
+  - '[US] - 216'
+  - '[US] - 021'
+  - '[US] - 1247'
+  - '[US] - 1404'
+- name: 🌐 Прочие
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[XX] - 3568'
+  - '[XX] - 3206'
+  - '[XX] - 3612'
+  - '[XX] - 4137'
+  - '[XX] - 1175'
+  - '[XX] - 3439'
+  - '[XX] - 972'
+  - '[XX] - 1554'
+  - '[XX] - 3816'
+  - '[XX] - 3959'
+  - '[XX] - 1766'
+- name: 🏳️ RE-FILTER
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[RE-FILTER] - 1031'
+  - '[RE-FILTER] - 447'
+  - '[RE-FILTER] - 1045'
+  - '[RE-FILTER] - 2135'
+  - '[RE-FILTER] - 1810'
+  - '[RE-FILTER] - 1882'
+  - '[RE-FILTER] - 2704'
+  - '[RE-FILTER] - 385'
+  - '[RE-FILTER] - 1957'
+  - '[RE-FILTER] - 2474'
+  - '[RE-FILTER] - 052'
+  - '[RE-FILTER] - 2302'
+  - '[RE-FILTER] - 776'
+  - '[RE-FILTER] - 1671'
+- name: 🏳️ RU-WHITELIST
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[RU-WHITELIST] - 118'
+- name: 🏳️ TOR
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[TOR] - 024'
+- name: 🔒 RU-BLOCKED
+  type: url-test
+  url: http://cp.cloudflare.com/generate_204
+  interval: 300
+  tolerance: 50
+  lazy: false
+  proxies:
+  - '[RU-BLOCKED] - 939'
+  - '[RU-BLOCKED] - 5653'
+  - '[RU-BLOCKED] - 5378'
+  - '[RU-BLOCKED] - 6010'
+  - '[RU-BLOCKED] - 2475'
+  - '[RU-BLOCKED] - 4405'
+  - '[RU-BLOCKED] - 3755'
+  - '[RU-BLOCKED] - 4229'
+  - '[RU-BLOCKED] - 2967'
+  - '[RU-BLOCKED] - 5882'
+  - '[RU-BLOCKED] - 3841'
+  - '[RU-BLOCKED] - 3999'
+  - '[RU-BLOCKED] - 4233'
+  - '[RU-BLOCKED] - 2842'
+  - '[RU-BLOCKED] - 027'
+  - '[RU-BLOCKED] - 5685'
+  - '[RU-BLOCKED] - 6969'
+  - '[RU-BLOCKED] - 3558'
+  - '[RU-BLOCKED] - 6900'
+  - '[RU-BLOCKED] - 5464'
+  - '[RU-BLOCKED] - 2681'
+  - '[RU-BLOCKED] - 2976'
+  - '[RU-BLOCKED] - 814'
+  - '[RU-BLOCKED] - 1436'
+  - '[RU-BLOCKED] - 6144'
+  - '[RU-BLOCKED] - 2287'
+  - '[RU-BLOCKED] - 1182'
+  - '[RU-BLOCKED] - 6074'
+  - '[RU-BLOCKED] - 3103'
+  - '[RU-BLOCKED] - 1274'
+  - '[RU-BLOCKED] - 2519'
+  - '[RU-BLOCKED] - 4366'
+proxies:
+- name: '[RE-FILTER] - 1031'
+  type: vless
+  server: saas.sin.fan
+  port: 443
+  uuid: 495c7195-85b8-498a-bf20-2ea9ce9175b5
+  tls: true
+  servername: snip.edgeoneai.cc.cd
+  client-fingerprint: chrome
+  alpn:
+  - http/1.1
+  network: ws
+  ws-opts:
+    path: /fdip
+    headers:
+      Host: snip.edgeoneai.cc.cd
+  udp: true
+- name: '[RE-FILTER] - 447'
+  type: vless
+  server: saas.sin.fan
+  port: 443
+  uuid: 495c7195-85b8-498a-bf20-2ea9ce9175b5
+  tls: true
+  servername: snip.edgeoneai.cc.cd
+  client-fingerprint: chrome
+  alpn:
+  - h3
+  - h2
+  network: ws
+  ws-opts:
+    path: /
+    headers:
+      Host: snip.edgeoneai.cc.cd
+  udp: true
+- name: '[RU-WHITELIST] - 118'
+  type: vless
+  server: 185.95.231.156
+  port: 443
+  uuid: 1f8cf47a-b66a-4916-979f-26edfcf44eea
+  flow: xtls-rprx-vision
+  tls: true
+  servername: www.apple.com
+  client-fingerprint: random
+  reality-opts:
+    public-key: 8eXftARun6KH38UZhuqIfPR1VF2DLS9RMBZEnF5k6To
+    short-id: a3a578ab
+  udp: true
+- name: '[DE] - 528'
+  type: vless
+  server: 169.40.42.179
+  port: 443
+  uuid: d65cc14c-f53f-4fe2-b262-97856601319c
+  flow: xtls-rprx-vision
+  tls: true
+  servername: yahoo.com
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: e2RLf57Li_-MDZGE9ss1BWPgP54mqRb5PfXhW2jcVVg
+    short-id: c39cc7310a
+  udp: true
+- name: '[DE] - 293'
+  type: vless
+  server: 169.40.42.223
+  port: 443
+  uuid: d65cc14c-f53f-4fe2-b262-97856601319c
+  flow: xtls-rprx-vision
+  tls: true
+  servername: yahoo.com
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: e2RLf57Li_-MDZGE9ss1BWPgP54mqRb5PfXhW2jcVVg
+    short-id: c39cc7310a
+  udp: true
+- name: '[RU-BLOCKED] - 939'
+  type: vless
+  server: 195.123.240.65
+  port: 443
+  uuid: ce18d0eb-5c71-41f9-96e5-1632e22456e4
+  flow: xtls-rprx-vision
+  tls: true
+  servername: www.cloudflare.com
+  client-fingerprint: firefox
+  reality-opts:
+    public-key: StPbcmBuzpuYUfa4oZ5SI3Bq1OSF_-oU1vp2AcyvQVE
+    short-id: 19296c9f1bf9c7b1
+  udp: true
+- name: '[US] - 1726'
+  type: vmess
+  server: 38.110.1.246
+  port: 18000
+  uuid: f8c8dc3d-0d37-46b0-8b34-a7232882fcfe
+  alterId: 0
+  cipher: auto
+  udp: true
+- name: '[DE] - 613'
+  type: vless
+  server: 169.40.42.182
+  port: 443
+  uuid: d65cc14c-f53f-4fe2-b262-97856601319c
+  flow: xtls-rprx-vision
+  tls: true
+  servername: yahoo.com
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: e2RLf57Li_-MDZGE9ss1BWPgP54mqRb5PfXhW2jcVVg
+    short-id: c39cc7310a
+  udp: true
+- name: '[DE] - 419'
+  type: vless
+  server: 169.40.42.16
+  port: 443
+  uuid: d65cc14c-f53f-4fe2-b262-97856601319c
+  flow: xtls-rprx-vision
+  tls: true
+  servername: yahoo.com
+  client-fingerprint: random
+  reality-opts:
+    public-key: e2RLf57Li_-MDZGE9ss1BWPgP54mqRb5PfXhW2jcVVg
+    short-id: c39cc7310a
+  udp: true
+- name: '[US] - 456'
+  type: vless
+  server: 199.232.78.159
+  port: 443
+  uuid: 5abd299c-59e8-46e1-98ec-fec6ea20bec3
+  tls: true
+  servername: google.com
+  client-fingerprint: chrome
+  network: ws
+  ws-opts:
+    path: /?
+    headers:
+      Host: pan2e.global.ssl.fastly.net
+  udp: true
+- name: '[RE-FILTER] - 1045'
+  type: vless
+  server: 162.159.135.234
+  port: 443
+  uuid: 495c7195-85b8-498a-bf20-2ea9ce9175b5
+  tls: true
+  servername: snip.edgeoneai.cc.cd
+  client-fingerprint: chrome
+  alpn:
+  - h3
+  - h2
+  network: ws
+  ws-opts:
+    path: /fdip=sstp://vpn:vpn@public-vpn-200.opengw.net:443
+    headers:
+      Host: snip.edgeoneai.cc.cd
+  udp: true
+- name: '[XX] - 3568'
+  type: vless
+  server: 188.114.97.6
+  port: 443
+  uuid: e6df2095-a73c-4043-8693-8d5a03686870
+  tls: true
+  servername: lucasjow.us.ci
+  client-fingerprint: chrome
+  alpn:
+  - http/1.1
+  network: ws
+  ws-opts:
+    path: /cart/docs/www/proxyip=108.160.132.132?ed#Telegram---mehrosaboran
+    headers:
+      Host: lucasjow.us.ci
+  udp: true
+- name: '[RU-BLOCKED] - 5653'
+  type: trojan
+  server: 104.18.37.127
+  port: 443
+  password: humanity
+  tls: true
+  sni: www.volumeroot.com
+  client-fingerprint: chrome
+  alpn:
+  - http/1.1
+  network: ws
+  ws-opts:
+    path: /assignment
+    headers:
+      Host: www.volumeroot.com
+  udp: true
+- name: '[RE-FILTER] - 2135'
+  type: vless
+  server: 172.64.150.43
+  port: 8080
+  uuid: e5cc16a6-ea42-46b2-82ae-ad2157e1641b
+  network: ws
+  ws-opts:
+    path: /sg-melbi
+    headers:
+      Host: hhlfy.twiladaphne.ndjp.net
+  udp: true
+- name: '[RU-BLOCKED] - 5378'
+  type: trojan
+  server: 104.21.33.59
+  port: 443
+  password: humanity
+  tls: true
+  sni: www.pleadcourt.org
+  client-fingerprint: unsafe
+  alpn:
+  - http/1.1
+  network: ws
+  ws-opts:
+    path: /assignment
+  udp: true
+- name: '[US] - 1289'
+  type: vless
+  server: 15.204.97.195
+  port: 23576
+  uuid: 48ff2b70-e180-582f-8866-d9a2edeed5f5
+  flow: xtls-rprx-vision
+  tls: true
+  servername: fuck.rkn
+  client-fingerprint: firefox
+  reality-opts:
+    public-key: 1y5h2FGWKXTJ9xLPCqPo6Mw7RxoZzh6fGkEQKNxpZ3s
+    short-id: '01'
+  udp: true
+- name: '[XX] - 3206'
+  type: trojan
+  server: 188.114.97.6
+  port: 443
+  password: humanity
+  tls: true
+  sni: www.pleadcourt.org
+  client-fingerprint: chrome
+  alpn:
+  - http/1.1
+  network: ws
+  ws-opts:
+    path: /assignment
+    headers:
+      Host: www.pleadcourt.org
+  udp: true
+- name: '[RU-BLOCKED] - 6010'
+  type: trojan
+  server: chatgpt.com
+  port: 443
+  password: Puj01Rc8UcA9IzcFcYOs8KMOhCz6aX2Q
+  tls: true
+  sni: mfyousheng.nl.eu.org
+  client-fingerprint: chrome
+  network: ws
+  ws-opts:
+    path: /tjwsLhx0SFASG4l9FERJ1g
+    headers:
+      Host: mfyousheng.nl.eu.org
+  udp: true
+- name: '[US] - 927'
+  type: vless
+  server: 199.232.78.159
+  port: 443
+  uuid: 5abd299c-59e8-46e1-98ec-fec6ea20bec3
+  tls: true
+  servername: safa.fastly.com
+  client-fingerprint: chrome
+  network: ws
+  ws-opts:
+    path: /?RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS--@RK_VPS
+    headers:
+      Host: pannn1.global.ssl.fastly.net
+  udp: true
+- name: '[NL] - 431'
+  type: vless
+  server: 206.71.158.124
+  port: 443
+  uuid: 3536e1fa-0850-44d1-b123-925ce12476cf
+  tls: true
+  servername: dey.lnmarketplace.net
+  client-fingerprint: chrome
+  alpn:
+  - h2
+  network: xhttp
+  xhttp-opts:
+    path: /kavir
+    host: dey.lnmarketplace.net
+    mode: stream-one
+  udp: true
+- name: '[RU-BLOCKED] - 2475'
+  type: vless
+  server: 51.158.206.98
+  port: 23576
+  uuid: 48ff2b70-e180-582f-8866-d9a2edeed5f5
+  flow: xtls-rprx-vision
+  tls: true
+  servername: fuck.rkn
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: 1y5h2FGWKXTJ9xLPCqPo6Mw7RxoZzh6fGkEQKNxpZ3s
+    short-id: '01'
+  udp: true
+- name: '[RU-BLOCKED] - 4405'
+  type: vless
+  server: 195.123.240.65
+  port: 443
+  uuid: ce18d0eb-5c71-41f9-96e5-1632e22456e4
+  flow: xtls-rprx-vision
+  tls: true
+  servername: www.cloudflare.com
+  client-fingerprint: ios
+  reality-opts:
+    public-key: StPbcmBuzpuYUfa4oZ5SI3Bq1OSF_-oU1vp2AcyvQVE
+    short-id: 19296c9f1bf9c7b1
+  udp: true
+- name: '[RU-BLOCKED] - 3755'
+  type: vmess
+  server: us5-1.998998.best
+  port: 443
+  uuid: 5504eaa8-1395-402f-8e0e-75ecd762e627
+  alterId: 0
+  cipher: auto
+  tls: true
+  servername: server4.9966338.xyz
+  client-fingerprint: chrome
+  network: ws
+  ws-opts:
+    path: /androirfdsreoightrjh?ed=2560
+    headers:
+      Host: server4.9966338.xyz
+  udp: true
+- name: '[RU-BLOCKED] - 4229'
+  type: vless
+  server: 51.158.206.87
+  port: 23576
+  uuid: 48ff2b70-e180-582f-8866-d9a2edeed5f5
+  flow: xtls-rprx-vision
+  tls: true
+  servername: fuck.rkn
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: 1y5h2FGWKXTJ9xLPCqPo6Mw7RxoZzh6fGkEQKNxpZ3s
+    short-id: ''
+  udp: true
+- name: '[TOR] - 024'
+  type: vless
+  server: 86.54.28.75
+  port: 443
+  uuid: 44ae52b9-76fc-444d-8e43-186b4384b80a
+  flow: xtls-rprx-vision
+  tls: true
+  servername: www.apple.com
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: PryGoq51ilG0eLUPl9i0xCvmk1xpwkyFSr_tG4GNLlU
+    short-id: 1d86d17709852910
+  udp: true
+- name: '[RU-BLOCKED] - 2967'
+  type: vless
+  server: 51.158.206.93
+  port: 23576
+  uuid: 48ff2b70-e180-582f-8866-d9a2edeed5f5
+  flow: xtls-rprx-vision
+  tls: true
+  servername: fuck.rkn
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: 1y5h2FGWKXTJ9xLPCqPo6Mw7RxoZzh6fGkEQKNxpZ3s
+    short-id: '01'
+  udp: true
+- name: '[RU-BLOCKED] - 5882'
+  type: vless
+  server: 104.21.84.30
+  port: 2053
+  uuid: 9d672694-c146-422e-b3b5-3717a38a0fcc
+  tls: true
+  servername: fr.api-music-fa.com
+  client-fingerprint: chrome
+  network: ws
+  ws-opts:
+    path: /api/voip/updates/static/fr2035
+    headers:
+      Host: fr.api-music-fa.com
+  udp: true
+- name: '[GB] - 112'
+  type: ss
+  server: 149.102.132.184
+  port: 443
+  cipher: aes-256-gcm
+  password: g5h5jleTRSyO3Rk4
+  udp: true
+- name: '[RU-BLOCKED] - 3841'
+  type: vless
+  server: 195.154.118.134
+  port: 443
+  uuid: 3c48b5f5-7766-4896-874e-b3ba1860e83a
+  flow: xtls-rprx-vision
+  tls: true
+  servername: w-mebel.pro
+  client-fingerprint: random
+  reality-opts:
+    public-key: YhT24GkuI1r7Fwo8pxIYH3CmTtbRlYs5X7fWtYp3vTY
+    short-id: 05f4f85fdc6c1379
+  udp: true
+- name: '[RU-BLOCKED] - 3999'
+  type: vless
+  server: 163.172.213.174
+  port: 80
+  uuid: e73df646-1f62-41bf-8c50-653497d603d0
+  network: ws
+  ws-opts:
+    path: /vless/
+    headers:
+      Host: SC-TheNetherlands2.09vpn.com
+  udp: true
+- name: '[GB] - 185'
+  type: ss
+  server: 82.38.31.39
+  port: 8080
+  cipher: chacha20-ietf-poly1305
+  password: oZIoA69Q8yhcQV8ka3Pa3A
+  udp: true
+- name: '[NL] - 321'
+  type: vless
+  server: 146.0.75.155
+  port: 995
+  uuid: 34066ca5-7755-4443-8fce-84d5ff435eef
+  tls: true
+  servername: nider-bel.mysynology.net
+  client-fingerprint: random
+  network: ws
+  ws-opts:
+    path: /api/v1
+    headers:
+      Host: nider-bel.mysynology.net
+    v2ray-http-upgrade: true
+  udp: true
+- name: '[GB] - 412'
+  type: ss
+  server: 82.38.31.187
+  port: 8080
+  cipher: chacha20-ietf-poly1305
+  password: k1dBOmOB4oqi7Ump37a1bQ
+  udp: true
+- name: '[GB] - 252'
+  type: vmess
+  server: 57.129.132.223
+  port: 80
+  uuid: a25cbf11-2908-4a1b-a3a8-9a571777dca3
+  alterId: 0
+  cipher: auto
+  network: ws
+  ws-opts:
+    path: /vmess/
+    headers:
+      Host: google.com
+  udp: true
+- name: '[PL] - 010'
+  type: vless
+  server: 177.1.192.72
+  port: 443
+  uuid: 4d852af3-a121-41aa-9aed-4ca40a6f7b4d
+  flow: xtls-rprx-vision
+  tls: true
+  servername: addons.mozilla.org
+  client-fingerprint: randomized
+  reality-opts:
+    public-key: y3YCXTqEVks0nGfiSwJ43ol4pY69-mWFUZsdmveoVDM
+    short-id: 46455ff0
+  udp: true
+- name: '[DE] - 821'
+  type: vless
+  server: edge.cloudtechone.org
+  port: 443
+  uuid: 5036de9b-1a18-40e2-97f6-9cbb4a4753e4
+  flow: xtls-rprx-vision
+  tls: true
+  servername: edge.cloudtechone.org
+  client-fingerprint: firefox
+  reality-opts:
+    public-key: _IBXb9NfhsnS21XbU9PIl73ExvrjXGXVLO0Za1ui5Fo
+    short-id: f93c9d5127e622e4
+  udp: true
+- name: '[ES] - 047'
+  type: vless
+  server: 212.227.235.66
+  port: 2053
+  uuid: ead0dd61-d398-40ad-80d6-a0e1e516d7d3
+  tls: true
+  servername: www.apple.com
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: 7Y6Xb5Ql_03K25x8yKUSOKI2JTOMyv2nyCcFza90uxk
+    short-id: 29e8dcd2b37aaa7f
+  udp: true
+- name: '[GB] - 397'
+  type: ss
+  server: 82.38.31.214
+  port: 8080
+  cipher: chacha20-ietf-poly1305
+  password: k1dBOmOB4oqi7Ump37a1bQ
+  udp: true
+- name: '[RU-BLOCKED] - 4233'
+  type: vless
+  server: 51.158.206.26
+  port: 23576
+  uuid: 48ff2b70-e180-582f-8866-d9a2edeed5f5
+  flow: xtls-rprx-vision
+  tls: true
+  servername: fuck.rkn
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: 1y5h2FGWKXTJ9xLPCqPo6Mw7RxoZzh6fGkEQKNxpZ3s
+    short-id: '01'
+  udp: true
+- name: '[NL] - 366'
+  type: vless
+  server: 89.125.96.76
+  port: 2053
+  uuid: 6c713691-3ca2-0008-ad25-113d1bed6b03
+  tls: true
+  servername: wss.zazazuza.ru
+  client-fingerprint: chrome
+  network: ws
+  ws-opts:
+    path: /vpn-wss/fluxor/59011/
+    headers:
+      Host: wss.zazazuza.ru
+  udp: true
+- name: '[GB] - 054'
+  type: ss
+  server: 82.38.31.47
+  port: 8080
+  cipher: chacha20-ietf-poly1305
+  password: oZIoA69Q8yhcQV8ka3Pa3A
+  udp: true
+- name: '[GB] - 380'
+  type: ss
+  server: 82.38.31.198
+  port: 8080
+  cipher: chacha20-ietf-poly1305
+  password: k1dBOmOB4oqi7Ump37a1bQ
+  udp: true
+- name: '[XX] - 3612'
+  type: vless
+  server: SC-TheNetherlands2.09vpn.com
+  port: 80
+  uuid: e73df646-1f62-41bf-8c50-653497d603d0
+  network: ws
+  ws-opts:
+    path: /vless/
+    headers:
+      Host: SC-TheNetherlands2.09vpn.com
+  udp: true
+- name: '[AE] - 047'
+  type: vless
+  server: 157.228.155.185
+  port: 443
+  uuid: df53b6c2-8005-475c-9eb9-74e1be785dc8
+  flow: xtls-rprx-vision
+  tls: true
+  servername: addons.mozilla.org
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: 4q8nqNb-0c-akP3XqVmen67BLXJVlx48a_GDRw16nVg
+    short-id: 5ea112e8
+  udp: true
+- name: '[NL] - 034'
+  type: vless
+  server: 13.143.172.203
+  port: 2087
+  uuid: 88aefb0c-cdbf-489f-9e6b-9be5b5fd5a11
+  tls: true
+  servername: 13.143.172.203
+  client-fingerprint: firefox
+  udp: true
+- name: '[IT] - 034'
+  type: vless
+  server: 204.216.216.23
+  port: 1114
+  uuid: 6ba2eac6-0ec9-44ca-a42b-a8e23aafb530
+  flow: xtls-rprx-vision
+  tls: true
+  servername: yahoo.com
+  client-fingerprint: firefox
+  reality-opts:
+    public-key: WfkCF0eEuIoO0MyJsKOddU89QrTzCZ4y2dzCJbH99CQ
+    short-id: 79a1e14b
+  udp: true
+- name: '[NL] - 451'
+  type: vless
+  server: 206.71.158.124
+  port: 443
+  uuid: 3536e1fa-0850-44d1-b123-925ce12476cf
+  tls: true
+  servername: dey.lnmarketplace.net
+  client-fingerprint: chrome
+  alpn:
+  - h2
+  network: xhttp
+  xhttp-opts:
+    path: /kavir/?@MARAMBASHI_MARAMBASHI_MARAMBASHI_MARAMBASHI?ed
+    host: dey.lnmarketplace.net
+    mode: stream-one
+  udp: true
+- name: '[FR] - 247'
+  type: ss
+  server: 51.158.26.27
+  port: 15104
+  cipher: aes-128-gcm
+  password: vldolmlmzmypc36okhum
+  udp: true
+- name: '[RE-FILTER] - 1810'
+  type: vless
+  server: 82.118.16.187
+  port: 443
+  uuid: dc2259c4-388e-4285-ba18-df619b6672b6
+  flow: xtls-rprx-vision
+  tls: true
+  servername: www.cloudflare.com
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: R5ycsjJ-v024902dMSqTsSdqxUwCFEXMebdBEWFt9VU
+    short-id: cd6065902eea7a02
+  udp: true
+- name: '[DE] - 320'
+  type: vless
+  server: ww2.levikogjgfdd.ir
+  port: 443
+  uuid: 9015f0bc-2053-4ca1-9b9b-a018b97b32d2
+  flow: xtls-rprx-vision
+  tls: true
+  servername: www.intel.com
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: SVgtyuD9khylgHuB0treGekxVSHPOS-wPZTNHUf6zj8
+    short-id: 85c86a9863
+  udp: true
+- name: '[RU-BLOCKED] - 2842'
+  type: vless
+  server: 172.67.190.248
+  port: 8443
+  uuid: 7c99dc89-bf49-45c9-acc5-e43f36657518
+  tls: true
+  servername: www.large-files.info
+  client-fingerprint: chrome
+  network: ws
+  ws-opts:
+    path: /var/www/html/video/preview/download/i8o0la
+  udp: true
+- name: '[RU-BLOCKED] - 027'
+  type: vless
+  server: sc-thenetherlands1.09vpn.com
+  port: 80
+  uuid: 40cc9b52-25b8-4cd5-8b45-715ae26e6baf
+  network: ws
+  ws-opts:
+    path: /vless/
+  udp: true
+- name: '[DE] - 323'
+  type: vless
+  server: fert5.localip.ir
+  port: 2087
+  uuid: ecbe8dbc-44f7-4275-8a6c-b0976a7bb5c8
+  tls: true
+  servername: fert5.localip.ir
+  client-fingerprint: chrome
+  alpn:
+  - h2
+  network: xhttp
+  xhttp-opts:
+    path: /retasokrer
+    host: fert5.localip.ir
+    mode: stream-one
+  udp: true
+- name: '[AE] - 022'
+  type: trojan
+  server: 31.57.190.50
+  port: 443
+  password: humanity
+  tls: true
+  sni: www.pleadcourt.org
+  client-fingerprint: unsafe
+  alpn:
+  - http/1.1
+  network: ws
+  ws-opts:
+    path: /assignment
+    headers:
+      Host: www.pleadcourt.org
+  udp: true
+- name: '[DE] - 040'
+  type: vless
+  server: de-2.ardesnode.ru
+  port: 443
+  uuid: 616c7b3b-41f4-4038-88c6-d6fedd0ae4a7
+  flow: xtls-rprx-vision
+  tls: true
+  servername: de-2.ardesnode.ru
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: PKlt_5ASsz137EvA9SKSadtjEv1k_U7VRtoelKCgADs
+    short-id: 9ea74b83f4993ca9
+  udp: true
+- name: '[NL] - 396'
+  type: ss
+  server: 193.29.139.204
+  port: 8080
+  cipher: chacha20-ietf-poly1305
+  password: oZIoA69Q8yhcQV8ka3Pa3A
+  udp: true
+- name: '[PL] - 131'
+  type: trojan
+  server: cheerful-swan.rooster465.autos
+  port: 443
+  password: UX82473651
+  tls: true
+  sni: cheerful-swan.rooster465.autos
+  client-fingerprint: chrome
+  udp: true
+- name: '[GB] - 406'
+  type: ss
+  server: 82.38.31.174
+  port: 8080
+  cipher: chacha20-ietf-poly1305
+  password: oZIoA69Q8yhcQV8ka3Pa3A
+  udp: true
+- name: '[AE] - 058'
+  type: vless
+  server: 31.57.190.89
+  port: 443
+  uuid: e6df2095-a73c-4043-8693-8d5a03686870
+  tls: true
+  servername: lucasjow.us.ci
+  client-fingerprint: unsafe
+  alpn:
+  - http/1.1
+  network: ws
+  ws-opts:
+    path: /cart/docs/www/proxyip=108.160.132.132
+    headers:
+      Host: lucasjow.us.ci
+  udp: true
+- name: '[FR] - 047'
+  type: vless
+  server: 137.74.16.237
+  port: 443
+  uuid: aaec4e42-a095-44b6-a239-f16d234a0798
+  flow: xtls-rprx-vision
+  tls: true
+  servername: www.icloud.com
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: 7LSzvilTVKGMtBDuKGeMrLtlhY7tQf5YcG566dEgO0I
+    short-id: b390e0a721d242b0
+  udp: true
+- name: '[RU-BLOCKED] - 5685'
+  type: vless
+  server: chatgpt.com
+  port: 8443
+  uuid: 7c99dc89-bf49-45c9-acc5-e43f36657518
+  tls: true
+  servername: www.large-files.info
+  client-fingerprint: chrome
+  alpn:
+  - http/1.1
+  network: ws
+  ws-opts:
+    path: /var/www/html/video/preview/download/i8o0la
+    headers:
+      Host: www.large-files.info
+  udp: true
+- name: '[DE] - 071'
+  type: vless
+  server: 144.31.62.170
+  port: 443
+  uuid: 318c935d-c195-41d3-99ad-9bbcfdab3386
+  flow: xtls-rprx-vision
+  tls: true
+  servername: de2.srv.vbuste.ru
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: 0-or5ogGhYbBgsVSrSC2Fhxyp2BN97Y9pqIdg61Qd08
+    short-id: 4be4110078ebed4a
+  udp: true
+- name: '[ES] - 027'
+  type: vless
+  server: 76.164.203.141
+  port: 443
+  uuid: e75ad2eb-6c1f-45ce-8023-f5f10875df66
+  flow: xtls-rprx-vision
+  tls: true
+  servername: zses.eu-cdn294.com
+  client-fingerprint: firefox
+  reality-opts:
+    public-key: ajzyADs9mOY6I3v7OWym5KgYh0afKmlCFaNw1pdQsWA
+    short-id: 6b4cf686eebb37b9
+  udp: true
+- name: '[LV] - 049'
+  type: vless
+  server: 138.124.180.137
+  port: 443
+  uuid: 5234b2b7-5e07-422c-8159-d62a676c00c6
+  flow: xtls-rprx-vision
+  tls: true
+  servername: www.apple.com
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: GBdkyDLfr0LIZo_94Xv8ycAKOmkjArYzwJAEMhuXX2c
+    short-id: 33acba1b
+  udp: true
+- name: '[PL] - 098'
+  type: vless
+  server: 213.21.232.224
+  port: 443
+  uuid: 616c7b3b-41f4-4038-88c6-d6fedd0ae4a7
+  flow: xtls-rprx-vision
+  tls: true
+  servername: pl-4.ardesnode.ru
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: PKlt_5ASsz137EvA9SKSadtjEv1k_U7VRtoelKCgADs
+    short-id: 9ea74b83f4993ca9
+  udp: true
+- name: '[DE] - 614'
+  type: vless
+  server: 31.70.111.146
+  port: 443
+  uuid: 84ed0e09-6803-4ef9-a977-74b657d971e5
+  flow: xtls-rprx-vision
+  tls: true
+  servername: www.apple.com
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: ZNmuzIn-zyJi2C0sWRpL9fsMYCgYauXpJElXTqY_LEE
+    short-id: d7de3a6ff4018957
+  udp: true
+- name: '[RU-BLOCKED] - 6969'
+  type: vless
+  server: ov-germany1.09vpn.com
+  port: 80
+  uuid: 7d90f043-ed7f-40c9-ac2f-352987904958
+  network: ws
+  ws-opts:
+    path: /vless/
+    headers:
+      Host: OV-Germany1.09vpn.com
+  udp: true
+- name: '[PL] - 123'
+  type: vless
+  server: polandsixsebenrkn010.qcloud.surf
+  port: 21382
+  uuid: 8bd04756-3beb-4348-82c9-d35453df50ce
+  flow: xtls-rprx-vision
+  tls: true
+  servername: metrika.yandex.ru
+  client-fingerprint: firefox
+  reality-opts:
+    public-key: HbK-TTnL1Dog-wKCowjLrKsx5ECIt2uxBsdGfeWG6kQ
+    short-id: 7bbf811a
+  udp: true
+- name: '[ES] - 041'
+  type: vless
+  server: 8gm8kr.palka-cdn.win
+  port: 443
+  uuid: e75ad2eb-6c1f-45ce-8023-f5f10875df66
+  flow: xtls-rprx-vision
+  tls: true
+  servername: zses.eu-cdn294.com
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: ajzyADs9mOY6I3v7OWym5KgYh0afKmlCFaNw1pdQsWA
+    short-id: 6b4cf686eebb37b9
+  udp: true
+- name: '[GB] - 437'
+  type: ss
+  server: 82.38.31.208
+  port: 8080
+  cipher: chacha20-ietf-poly1305
+  password: k1dBOmOB4oqi7Ump37a1bQ
+  udp: true
+- name: '[NL] - 553'
+  type: trojan
+  server: 45.87.41.18
+  port: 443
+  password: humanity
+  tls: true
+  sni: www.calmlunch.com
+  client-fingerprint: chrome
+  network: ws
+  ws-opts:
+    path: /assignment
+  udp: true
+- name: '[GB] - 260'
+  type: ss
+  server: 82.38.31.215
+  port: 8080
+  cipher: chacha20-ietf-poly1305
+  password: k1dBOmOB4oqi7Ump37a1bQ
+  udp: true
+- name: '[NL] - 335'
+  type: vless
+  server: 2.27.71.53
+  port: 443
+  uuid: df53b6c2-8005-475c-9eb9-74e1be785dc8
+  flow: xtls-rprx-vision
+  tls: true
+  servername: addons.mozilla.org
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: 5tMM2VdgddmxOKhdNa3b7i_aXno1g-_61SzkppS2UXQ
+    short-id: f3c023cc
+  udp: true
+- name: '[DE] - 831'
+  type: vless
+  server: 64.188.83.186
+  port: 443
+  uuid: 616c7b3b-41f4-4038-88c6-d6fedd0ae4a7
+  flow: xtls-rprx-vision
+  tls: true
+  servername: de-2.ardesnode.ru
+  client-fingerprint: random
+  reality-opts:
+    public-key: PKlt_5ASsz137EvA9SKSadtjEv1k_U7VRtoelKCgADs
+    short-id: 9ea74b83f4993ca9
+  udp: true
+- name: '[RE-FILTER] - 1882'
+  type: vless
+  server: itak.ali-bard.online
+  port: 443
+  uuid: 12e95f93-443c-45f0-9a2a-5b318b9124cf
+  flow: xtls-rprx-vision
+  tls: true
+  servername: itak.ali-bard.online
+  client-fingerprint: firefox
+  reality-opts:
+    public-key: SB1uC0OEveYjSiS_Nuw9Ld-uVVXWqi794OGnldthY3I
+    short-id: ''
+  udp: true
+- name: '[NL] - 014'
+  type: ss
+  server: 193.29.139.225
+  port: 8080
+  cipher: chacha20-ietf-poly1305
+  password: oZIoA69Q8yhcQV8ka3Pa3A
+  udp: true
+- name: '[GB] - 011'
+  type: ss
+  server: 82.38.31.69
+  port: 8080
+  cipher: chacha20-ietf-poly1305
+  password: oZIoA69Q8yhcQV8ka3Pa3A
+  udp: true
+- name: '[RO] - 023'
+  type: vless
+  server: 205.237.110.254
+  port: 443
+  uuid: e75ad2eb-6c1f-45ce-8023-f5f10875df66
+  flow: xtls-rprx-vision
+  tls: true
+  servername: zsit.eu-cdn294.com
+  client-fingerprint: firefox
+  reality-opts:
+    public-key: IG6lxrx_xkGOoBuo3DC8sgQoIFmqVgznIr0qOuNO0w4
+    short-id: cd2d53510b4df2a8
+  udp: true
+- name: '[EE] - 049'
+  type: vless
+  server: est-1.ardesnode.ru
+  port: 443
+  uuid: 616c7b3b-41f4-4038-88c6-d6fedd0ae4a7
+  flow: xtls-rprx-vision
+  tls: true
+  servername: est-1.ardesnode.ru
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: PKlt_5ASsz137EvA9SKSadtjEv1k_U7VRtoelKCgADs
+    short-id: 9ea74b83f4993ca9
+  udp: true
+- name: '[GB] - 215'
+  type: ss
+  server: 82.110.60.9
+  port: 19999
+  cipher: aes-256-gcm
+  password: ZRpgaBeGxtENIXgvhpkZBKz9GnWRS2dYcx9O+a2iwN4=
+  udp: true
+- name: '[FI] - 067'
+  type: vless
+  server: 138.124.15.176
+  port: 443
+  uuid: 616c7b3b-41f4-4038-88c6-d6fedd0ae4a7
+  flow: xtls-rprx-vision
+  tls: true
+  servername: fn-3.ardesnode.ru
+  client-fingerprint: random
+  reality-opts:
+    public-key: PKlt_5ASsz137EvA9SKSadtjEv1k_U7VRtoelKCgADs
+    short-id: 9ea74b83f4993ca9
+  udp: true
+- name: '[XX] - 4137'
+  type: trojan
+  server: normal-macaque.rooster465.autos
+  port: 443
+  password: UX82473651
+  tls: true
+  sni: normal-macaque.rooster465.autos
+  client-fingerprint: chrome
+  udp: true
+- name: '[JP] - 079'
+  type: vless
+  server: jumpernode.site
+  port: 443
+  uuid: 23af32ca-bea1-4a5e-bebb-04d1b1b633bc
+  flow: xtls-rprx-vision
+  tls: true
+  servername: p-nt-www-amazon-com-kalias.amazon.com
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: sDKrtAJk2VP_w1w7cFi2O86RdlvQ2E2An5xsRdJlgGE
+    short-id: 6d962e8d8a0dce
+  udp: true
+- name: '[IQ] - 004'
+  type: vless
+  server: arcturus.yokkastars.com
+  port: 40443
+  uuid: bb0f1ed0-0298-40a1-adb1-1f5d6ab33d54
+  flow: xtls-rprx-vision
+  tls: true
+  servername: deepl.com
+  client-fingerprint: qq
+  reality-opts:
+    public-key: w4AYHvQnQS6olDqoG9ptLOtgehaWOsv9HQhDax5bLA4
+    short-id: db46e2946fc466fd
+  udp: true
+- name: '[RE-FILTER] - 2704'
+  type: vless
+  server: summerculture.net
+  port: 2053
+  uuid: 2c634977-584e-4e1f-b501-1b70c77a6743
+  tls: true
+  servername: summerculture.net
+  client-fingerprint: firefox
+  alpn:
+  - h2
+  - +http/1.1
+  network: xhttp
+  xhttp-opts:
+    path: /api/v1/upload
+    host: summerculture.net
+    mode: auto
+  udp: true
+- name: '[XX] - 1175'
+  type: vless
+  server: av513u.sysopnova.art
+  port: 443
+  uuid: 3710fc0f-5f0c-4b9c-a5d4-40cb419e943a
+  flow: xtls-rprx-vision
+  tls: true
+  servername: yandex.ru
+  client-fingerprint: firefox
+  reality-opts:
+    public-key: WKN5yaRN05O2WdCURXRmS-yBVYaabaFWOvGudX6ohWc
+    short-id: b97e7d4582b6fa6e
+  udp: true
+- name: '[RU-BLOCKED] - 3558'
+  type: vless
+  server: OV-Germany1.09vpn.com
+  port: 80
+  uuid: 7d90f043-ed7f-40c9-ac2f-352987904958
+  network: ws
+  ws-opts:
+    path: /vless/
+  udp: true
+- name: '[EE] - 040'
+  type: vless
+  server: 95.85.224.51
+  port: 443
+  uuid: 342ab7e4-5a89-0001-8809-304120d4aa83
+  flow: xtls-rprx-vision
+  tls: true
+  servername: max.ru
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: WWeAHWUVD-phmnjNJ823cer0c4CMIbEs08AhsuEZmDc
+    short-id: a696de84963656de
+  udp: true
+- name: '[US] - 855'
+  type: vless
+  server: 31.76.7.227
+  port: 443
+  uuid: d0e771c5-024e-4393-bb90-4a3e3c561656
+  flow: xtls-rprx-vision
+  tls: true
+  servername: origin.vpnoodles.ru
+  client-fingerprint: firefox
+  reality-opts:
+    public-key: nIL5EeUo2XUkCaLJGbzgRm6zhF-96kWvV2VmhEt3CX4
+    short-id: 4af4102cb26e59
+  udp: true
+- name: '[CH] - 037'
+  type: vless
+  server: 208.69.78.217
+  port: 2053
+  uuid: c0dd6d59-1573-43af-8b70-1470b2632a6d
+  tls: true
+  servername: www.apple.com
+  client-fingerprint: firefox
+  reality-opts:
+    public-key: A49ue7zXSusJZdErPAewg3jqGdUFIO1a9xOunEKJfC0
+    short-id: ad86e2d52ff40ebd
+  udp: true
+- name: '[GB] - 223'
+  type: ss
+  server: 82.38.31.17
+  port: 8080
+  cipher: chacha20-ietf-poly1305
+  password: oZIoA69Q8yhcQV8ka3Pa3A
+  udp: true
+- name: '[RE-FILTER] - 385'
+  type: vless
+  server: 78.159.250.84
+  port: 2053
+  uuid: 2c634977-584e-4e1f-b501-1b70c77a6743
+  tls: true
+  servername: summerculture.net
+  client-fingerprint: chrome
+  network: xhttp
+  xhttp-opts:
+    path: /api/v1/upload
+    host: summerculture.net
+    mode: auto
+  udp: true
+- name: '[RU-BLOCKED] - 6900'
+  type: trojan
+  server: 85.31.102.163
+  port: 443
+  password: humanity
+  tls: true
+  sni: www.calmlunch.com
+  client-fingerprint: chrome
+  network: ws
+  ws-opts:
+    path: /assignment
+    headers:
+      Host: www.calmlunch.com
+  udp: true
+- name: '[DE] - 296'
+  type: vless
+  server: 169.40.42.173
+  port: 443
+  uuid: d65cc14c-f53f-4fe2-b262-97856601319c
+  flow: xtls-rprx-vision
+  tls: true
+  servername: yahoo.com
+  client-fingerprint: ios
+  reality-opts:
+    public-key: e2RLf57Li_-MDZGE9ss1BWPgP54mqRb5PfXhW2jcVVg
+    short-id: c39cc7310a
+  udp: true
+- name: '[SC] - 182'
+  type: vless
+  server: mskk2.artemida.digital
+  port: 12087
+  uuid: 79459f96-504a-4e1c-864e-73c16d12f449
+  flow: xtls-rprx-vision
+  tls: true
+  servername: mskk2.artemida.digital
+  client-fingerprint: firefox
+  reality-opts:
+    public-key: xSMOwolkPn3goQGzh7K3BorZ8kvlHxxp9EyEAE3BB1s
+    short-id: 5e6ccddff2258650
+  udp: true
+- name: '[XX] - 3439'
+  type: vless
+  server: gz1.polymarket.party
+  port: 50002
+  uuid: aec8e5e3-bb81-4b22-8802-0b88c54997b3
+  tls: true
+  servername: tyo1.australiacaregroup.site
+  client-fingerprint: chrome
+  udp: true
+- name: '[NL] - 089'
+  type: ss
+  server: 193.29.139.197
+  port: 8080
+  cipher: chacha20-ietf-poly1305
+  password: oZIoA69Q8yhcQV8ka3Pa3A
+  udp: true
+- name: '[RU] - 373'
+  type: vless
+  server: 217.149.30.73
+  port: 8443
+  uuid: ee18d188-14cc-417e-beb1-70e4add6d023
+  flow: xtls-rprx-vision
+  tls: true
+  servername: time.nztvpn.com
+  client-fingerprint: safari
+  reality-opts:
+    public-key: p87u9cOh91BaXsKS-HoCoOUXxHcOwkM6ByTWmz_6b2Y
+    short-id: 0da7e14db353e7d0
+  udp: true
+- name: '[RU] - 067'
+  type: vless
+  server: sl5.api-yandex.cloud
+  port: 443
+  uuid: f82036e3-11e5-4f73-a41f-515df7399e32
+  flow: xtls-rprx-vision
+  tls: true
+  servername: sl5.api-yandex.cloud
+  client-fingerprint: random
+  reality-opts:
+    public-key: q-o8pdgPIzaCeNAJL4ms6SisFEotXsaeTLfxWVTbiw8
+    short-id: ''
+  udp: true
+- name: '[US] - 576'
+  type: vless
+  server: 31.76.7.227
+  port: 443
+  uuid: d0e771c5-024e-4393-bb90-4a3e3c561656
+  flow: xtls-rprx-vision
+  tls: true
+  servername: origin.vpnoodles.ru
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: nIL5EeUo2XUkCaLJGbzgRm6zhF-96kWvV2VmhEt3CX4
+    short-id: 4af4102cb26e59
+  udp: true
+- name: '[RE-FILTER] - 1957'
+  type: ss
+  server: 15.204.247.124
+  port: 2375
+  cipher: aes-256-gcm
+  password: faBAoD54k87UJG7
+  udp: true
+- name: '[EE] - 024'
+  type: vless
+  server: ee10.zazazuza.ru
+  port: 8443
+  uuid: 6c713691-3ca2-4446-ad25-113d1bed6b03
+  tls: true
+  servername: fdghyt.com
+  client-fingerprint: chrome
+  network: ws
+  ws-opts:
+    path: /vpn-wss/fluxor/59011/
+    headers:
+      Host: fdghyt.com
+  udp: true
+- name: '[FI] - 134'
+  type: vless
+  server: 144.31.27.215
+  port: 43000
+  uuid: 47f79fc1-0646-40e8-8a58-73e85d183d5a
+  flow: xtls-rprx-vision
+  tls: true
+  servername: 144.31.27.215
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: dxCQnOekn14riFxt3vdwDNydvW47FsmwFG6BJ2mUgEg
+    short-id: 568d87a47271344e
+  udp: true
+- name: '[US] - 986'
+  type: vless
+  server: 172.245.253.16
+  port: 443
+  uuid: b67422ff-101b-433b-8f66-4ab282960b36
+  flow: xtls-rprx-vision
+  tls: true
+  servername: www.apple.com
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: Vh8dv6ENmfFd4JlPgj9-R1Fbet2m6JyRFukcVvDq5A8
+    short-id: e7dc2c820ba8bbd4
+  udp: true
+- name: '[BG] - 031'
+  type: trojan
+  server: 193.239.160.134
+  port: 443
+  password: humanity
+  tls: true
+  sni: www.calmlunch.com
+  client-fingerprint: chrome
+  network: ws
+  ws-opts:
+    path: '%2Fassignment'
+    headers:
+      Host: www.calmlunch.com
+  udp: true
+- name: '[RE-FILTER] - 2474'
+  type: trojan
+  server: pretty-rat.rooster465.autos
+  port: 443
+  password: UX82473651
+  tls: true
+  sni: pretty-rat.rooster465.autos
+  client-fingerprint: chrome
+  udp: true
+- name: '[KR] - 054'
+  type: vless
+  server: 3.39.4.109
+  port: 13672
+  uuid: 814bd064-544d-4255-a070-5705c03f6da9
+  flow: xtls-rprx-vision
+  tls: true
+  servername: www.apple.com
+  client-fingerprint: edge
+  reality-opts:
+    public-key: k2hPp0tTW0Da-HK94wYpSCLbuK44LfGqC2MSJIM1Ti0
+    short-id: 48050fab
+  udp: true
+- name: '[XX] - 972'
+  type: vless
+  server: support.zoom.us
+  port: 8443
+  uuid: ba9ba1d3-19c8-4792-9d3f-ddd2cdcc2e65
+  tls: true
+  servername: primelinelk.me
+  client-fingerprint: firefox
+  network: ws
+  ws-opts:
+    path: /xprolk-primeline
+    headers:
+      Host: primelinelk.me
+  udp: true
+- name: '[RU-BLOCKED] - 5464'
+  type: trojan
+  server: 195.181.244.216
+  port: 443
+  password: humanity
+  tls: true
+  sni: www.calmlunch.com
+  client-fingerprint: chrome
+  network: ws
+  ws-opts:
+    path: /assignment
+  udp: true
+- name: '[MY] - 003'
+  type: vmess
+  server: 47.250.135.244
+  port: 10000
+  uuid: aedc66b8-99d7-4a21-8310-61870e7f870d
+  alterId: 0
+  cipher: auto
+  udp: true
+- name: '[DE] - 022'
+  type: vless
+  server: 91.233.8.141
+  port: 443
+  uuid: 81d8f575-a9c3-03e7-be6b-c0e1dc1d2e20
+  flow: xtls-rprx-vision
+  tls: true
+  servername: tnt-cloud.ru
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: k76Ze8R0E5NyZwvBZT1A4n0zlVXxTeHQDAs0bBqiGQw
+    short-id: 6e5f2a3b
+  udp: true
+- name: '[SG] - 014'
+  type: vless
+  server: 45.118.133.249
+  port: 443
+  uuid: 20ff936a-8eb5-4d27-9cce-93f2016d467b
+  tls: true
+  servername: free.nadun.store
+  client-fingerprint: firefox
+  network: ws
+  ws-opts:
+    path: /
+  udp: true
+- name: '[GB] - 399'
+  type: vless
+  server: 23.81.36.148
+  port: 1222
+  uuid: 36c3dcc2-17b6-4478-b8a7-3978e6d5afe9
+  tls: true
+  servername: www.forvo.com
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: zpLKK8HuwXJDH9D0O3t5Z_tO3ajkj7VRtXdr6UGy1zE
+    short-id: a25d0f
+  udp: true
+- name: '[MY] - 009'
+  type: vless
+  server: 216.173.67.59
+  port: 443
+  uuid: d342d11e-d224-4463-b982-532309285094
+  tls: true
+  servername: ccc.010304.xyz
+  client-fingerprint: chrome
+  network: ws
+  ws-opts:
+    path: /fp=chrome
+    headers:
+      Host: ccc.010304.xyz
+  udp: true
+- name: '[CY] - 007'
+  type: vless
+  server: 185.166.154.111
+  port: 443
+  uuid: 91d734be-a3d0-4d50-83ab-74cf7b6966fa
+  flow: xtls-rprx-vision
+  tls: true
+  servername: cdn.bulkavpn.top
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: bQZcMViJWXus9rMSTOa-ZAaUJC0mIlPx7XmzrLp8GQU
+    short-id: 94f32cfc
+  udp: true
+- name: '[RU-BLOCKED] - 2681'
+  type: vless
+  server: 62.210.91.10
+  port: 23576
+  uuid: 48ff2b70-e180-582f-8866-d9a2edeed5f5
+  flow: xtls-rprx-vision
+  tls: true
+  servername: fuck.rkn
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: 1y5h2FGWKXTJ9xLPCqPo6Mw7RxoZzh6fGkEQKNxpZ3s
+    short-id: '01'
+  udp: true
+- name: '[DE] - 124'
+  type: vless
+  server: 169.40.42.202
+  port: 443
+  uuid: d65cc14c-f53f-4fe2-b262-97856601319c
+  flow: xtls-rprx-vision
+  tls: true
+  servername: yahoo.com
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: e2RLf57Li_-MDZGE9ss1BWPgP54mqRb5PfXhW2jcVVg
+    short-id: c39cc7310a
+  udp: true
+- name: '[CY] - 050'
+  type: vless
+  server: 185.166.154.111
+  port: 443
+  uuid: 91d734be-a3d0-4d50-83ab-74cf7b6966fa
+  flow: xtls-rprx-vision
+  tls: true
+  servername: cdn.bulkavpn.top
+  client-fingerprint: firefox
+  reality-opts:
+    public-key: bQZcMViJWXus9rMSTOa-ZAaUJC0mIlPx7XmzrLp8GQU
+    short-id: 94f32cfc
+  udp: true
+- name: '[DE] - 751'
+  type: vless
+  server: defrnode.xyy123.bid
+  port: 443
+  uuid: 8af93649-403b-46d8-9966-923d4c58402c
+  flow: xtls-rprx-vision
+  tls: true
+  servername: p-y3-www-amazon-com-kalias.amazon.com
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: XTarABsaaFbjYNk6lRKnUzGavHzeqMIP7B8dZGNCvkE
+    short-id: 0fa4a0e2493392
+  udp: true
+- name: '[XX] - 1554'
+  type: vless
+  server: 188.114.97.6
+  port: 443
+  uuid: 49ccad64-c854-4f33-b334-793cf0d02b74
+  tls: true
+  servername: newcscf.jisucf.cloudns.ch
+  client-fingerprint: chrome
+  alpn:
+  - http/1.1
+  network: ws
+  ws-opts:
+    path: /?Telegram---mehrosabiran
+    headers:
+      Host: newcscf.jisucf.cloudns.ch
+  udp: true
+- name: '[RU-BLOCKED] - 2976'
+  type: vless
+  server: 104.26.4.2
+  port: 443
+  uuid: d342d11e-d224-4463-b982-532309285094
+  tls: true
+  servername: ccc.010304.xyz
+  client-fingerprint: chrome
+  network: ws
+  ws-opts:
+    path: /
+    headers:
+      Host: ccc.010304.xyz
+  udp: true
+- name: '[RU-BLOCKED] - 814'
+  type: trojan
+  server: 45.80.111.7
+  port: 443
+  password: humanity
+  tls: true
+  sni: www.calmlunch.com
+  client-fingerprint: chrome
+  network: ws
+  ws-opts:
+    path: /assignment
+  udp: true
+- name: '[XX] - 3816'
+  type: vless
+  server: 188.114.97.6
+  port: 443
+  uuid: 495c7195-85b8-498a-bf20-2ea9ce9175b5
+  tls: true
+  servername: snip.edgeoneai.cc.cd
+  client-fingerprint: chrome
+  alpn:
+  - http/1.1
+  network: ws
+  ws-opts:
+    path: /fdip=sstp://vpn:vpn@vpn748359672.opengw.net:1458?ed=2560#Telegram---MTMVPN
+    headers:
+      Host: snip.edgeoneai.cc.cd
+  udp: true
+- name: '[DE] - 031'
+  type: trojan
+  server: 185.220.100.168
+  port: 443
+  password: humanity
+  tls: true
+  sni: www.calmlunch.com
+  client-fingerprint: chrome
+  network: ws
+  ws-opts:
+    path: /assignment
+    headers:
+      Host: www.calmlunch.com
+  udp: true
+- name: '[SG] - 144'
+  type: vless
+  server: 54.251.9.130
+  port: 24146
+  uuid: 9d9a048b-3aea-4b3e-b106-1106bf301feb
+  flow: xtls-rprx-vision
+  tls: true
+  servername: www.intel.com
+  client-fingerprint: ios
+  reality-opts:
+    public-key: VeluC9A7XDurAWQNgXKShS2SJSgoK79QHFgiAMYrvGo
+    short-id: 7205d9079521832c
+  udp: true
+- name: '[DE] - 279'
+  type: vless
+  server: 169.40.42.179
+  port: 443
+  uuid: d65cc14c-f53f-4fe2-b262-97856601319c
+  flow: xtls-rprx-vision
+  tls: true
+  servername: yahoo.com
+  client-fingerprint: ios
+  reality-opts:
+    public-key: e2RLf57Li_-MDZGE9ss1BWPgP54mqRb5PfXhW2jcVVg
+    short-id: c39cc7310a
+  udp: true
+- name: '[DE] - 481'
+  type: vless
+  server: 169.40.42.225
+  port: 443
+  uuid: d65cc14c-f53f-4fe2-b262-97856601319c
+  flow: xtls-rprx-vision
+  tls: true
+  servername: yahoo.com
+  client-fingerprint: qq
+  reality-opts:
+    public-key: e2RLf57Li_-MDZGE9ss1BWPgP54mqRb5PfXhW2jcVVg
+    short-id: c39cc7310a
+  udp: true
+- name: '[DE] - 131'
+  type: vless
+  server: 169.40.42.104
+  port: 443
+  uuid: d65cc14c-f53f-4fe2-b262-97856601319c
+  flow: xtls-rprx-vision
+  tls: true
+  servername: yahoo.com
+  client-fingerprint: ios
+  reality-opts:
+    public-key: e2RLf57Li_-MDZGE9ss1BWPgP54mqRb5PfXhW2jcVVg
+    short-id: c39cc7310a
+  udp: true
+- name: '[DE] - 761'
+  type: vless
+  server: 169.40.42.89
+  port: 443
+  uuid: d65cc14c-f53f-4fe2-b262-97856601319c
+  flow: xtls-rprx-vision
+  tls: true
+  servername: yahoo.com
+  client-fingerprint: qq
+  reality-opts:
+    public-key: e2RLf57Li_-MDZGE9ss1BWPgP54mqRb5PfXhW2jcVVg
+    short-id: c39cc7310a
+  udp: true
+- name: '[DE] - 417'
+  type: vless
+  server: 169.40.42.16
+  port: 443
+  uuid: d65cc14c-f53f-4fe2-b262-97856601319c
+  flow: xtls-rprx-vision
+  tls: true
+  servername: yahoo.com
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: e2RLf57Li_-MDZGE9ss1BWPgP54mqRb5PfXhW2jcVVg
+    short-id: c39cc7310a
+  udp: true
+- name: '[RU-BLOCKED] - 1436'
+  type: vless
+  server: 66.70.179.198
+  port: 2053
+  uuid: dc620cd6-a9d8-4a0f-8f18-006b895db77e
+  tls: true
+  servername: www.cloudflare.com
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: k4l6TxwkBbx9DhZAFpByq5rfCWFSgyOex3f_eFe9CWU
+    short-id: 83f8317a948bb769
+  udp: true
+- name: '[RU-BLOCKED] - 6144'
+  type: vless
+  server: chatgpt.com
+  port: 8443
+  uuid: 7c99dc89-bf49-45c9-acc5-e43f36657518
+  tls: true
+  servername: www.large-files.info
+  client-fingerprint: chrome
+  alpn:
+  - http/1.1
+  network: ws
+  ws-opts:
+    path: /var/www/html/video/preview/download/i8o0la
+  udp: true
+- name: '[CY] - 042'
+  type: vless
+  server: 194.76.154.31
+  port: 40443
+  uuid: 9f0baff8-bdee-4de9-9515-bcc4932b41fa
+  tls: true
+  servername: deepl.com
+  client-fingerprint: qq
+  reality-opts:
+    public-key: MN6QjUHDUXyteMdR-cDna89fq4X3qgQhLnNqTtRUbBQ
+    short-id: a8ae
+  udp: true
+- name: '[RE-FILTER] - 052'
+  type: vless
+  server: 82.118.22.161
+  port: 443
+  uuid: 05488656-d4bf-4634-8b2e-e4ff5a56c7e2
+  flow: xtls-rprx-vision
+  tls: true
+  servername: www.cloudflare.com
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: xY1KpNxaIGmi6jfeudYQ_aaLGQqWK_uHStnwUFd2_2E
+    short-id: fa3ea655619a3e78
+  udp: true
+- name: '[GB] - 421'
+  type: trojan
+  server: 213.1.145.50
+  port: 443
+  password: humanity
+  tls: true
+  sni: www.calmlunch.com
+  client-fingerprint: chrome
+  network: ws
+  ws-opts:
+    path: /assignment
+  udp: true
+- name: '[US] - 482'
+  type: vless
+  server: 172.245.253.16
+  port: 443
+  uuid: b67422ff-101b-433b-8f66-4ab282960b36
+  flow: xtls-rprx-vision
+  tls: true
+  servername: www.apple.com
+  client-fingerprint: random
+  reality-opts:
+    public-key: Vh8dv6ENmfFd4JlPgj9-R1Fbet2m6JyRFukcVvDq5A8
+    short-id: e7dc2c820ba8bbd4
+  udp: true
+- name: '[RU-BLOCKED] - 2287'
+  type: vless
+  server: cf.090227.xyz
+  port: 443
+  uuid: e6df2095-a73c-4043-8693-8d5a03686870
+  tls: true
+  servername: lucasjow.us.ci
+  client-fingerprint: chrome
+  network: ws
+  ws-opts:
+    path: /cart/docs/www/proxyip=108.160.132.132
+    headers:
+      Host: lucasjow.us.ci
+  udp: true
+- name: '[RE-FILTER] - 2302'
+  type: vless
+  server: saas.sin.fan
+  port: 443
+  uuid: 495c7195-85b8-498a-bf20-2ea9ce9175b5
+  tls: true
+  servername: snip.edgeoneai.cc.cd
+  client-fingerprint: chrome
+  network: ws
+  ws-opts:
+    path: /fdip=sstp://vpn:vpn@public-vpn-200.opengw.net:443
+    headers:
+      Host: snip.edgeoneai.cc.cd
+  udp: true
+- name: '[RU-BLOCKED] - 1182'
+  type: vless
+  server: 104.17.44.17
+  port: 8080
+  uuid: e5cc16a6-ea42-46b2-82ae-ad2157e1641b
+  network: ws
+  ws-opts:
+    path: /sg-melbi
+    headers:
+      Host: hhlfy.twiladaphne.ndjp.net
+  udp: true
+- name: '[RE-FILTER] - 776'
+  type: vless
+  server: 162.159.130.234
+  port: 443
+  uuid: 495c7195-85b8-498a-bf20-2ea9ce9175b5
+  tls: true
+  servername: snip.edgeoneai.cc.cd
+  client-fingerprint: chrome
+  network: ws
+  ws-opts:
+    path: /fdip=sstp://vpn:vpn@public-vpn-200.opengw.net:443?ed=2560#Telegram---PLANB_NET---PLANB_NET---PLANB_NET---PLANB_NET
+    headers:
+      Host: snip.edgeoneai.cc.cd
+  udp: true
+- name: '[RU-BLOCKED] - 6074'
+  type: vless
+  server: 104.19.12.0
+  port: 443
+  uuid: 30e52776-55ac-3cb4-8d36-e2910f07e2c3
+  tls: true
+  servername: b33ec4a1s226.fuhuovps.xyz
+  client-fingerprint: ios
+  alpn:
+  - h2
+  - http/1.1
+  network: xhttp
+  xhttp-opts:
+    path: e0d9cd6ea04ecda957b4ca0869e038af
+    host: b33ec4a1s226.fuhuovps.xyz
+  udp: true
+- name: '[DE] - 300'
+  type: vless
+  server: 169.40.42.229
+  port: 443
+  uuid: d65cc14c-f53f-4fe2-b262-97856601319c
+  flow: xtls-rprx-vision
+  tls: true
+  servername: yahoo.com
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: e2RLf57Li_-MDZGE9ss1BWPgP54mqRb5PfXhW2jcVVg
+    short-id: c39cc7310a
+  udp: true
+- name: '[NL] - 414'
+  type: vless
+  server: 185.114.48.103
+  port: 443
+  uuid: 616c7b3b-41f4-4038-88c6-d6fedd0ae4a7
+  flow: xtls-rprx-vision
+  tls: true
+  servername: nd-3.ardesnode.ru
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: PKlt_5ASsz137EvA9SKSadtjEv1k_U7VRtoelKCgADs
+    short-id: 9ea74b83f4993ca9
+  udp: true
+- name: '[FR] - 169'
+  type: vmess
+  server: 57.128.164.21
+  port: 80
+  uuid: 10029c03-5d2f-4185-aab2-cbf91eef7361
+  alterId: 0
+  cipher: auto
+  network: ws
+  ws-opts:
+    path: /d3d3LmlyYW5ob3N0LmNvbQ==
+    headers:
+      Host: https.http.www.net.com.ramseyv2.ir.
+  udp: true
+- name: '[US] - 274'
+  type: ss
+  server: 156.146.38.170
+  port: 443
+  cipher: aes-128-gcm
+  password: shadowsocks
+  udp: true
+- name: '[US] - 216'
+  type: ss
+  server: 156.146.38.167
+  port: 443
+  cipher: aes-128-gcm
+  password: shadowsocks
+  udp: true
+- name: '[US] - 021'
+  type: vless
+  server: 154.29.149.140
+  port: 16586
+  uuid: 57beeeb0-03fc-4fc9-94da-7604488a7134
+  flow: xtls-rprx-vision
+  tls: true
+  servername: us1p1.xn--ghq880n3na965a.com
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: tBvlo8F8hKRXSK-EHRAfzEH-x3e4uvheGloO-9bPKx4
+    short-id: 70ab6d813e
+  udp: true
+- name: '[NL] - 364'
+  type: vless
+  server: 62.105.220.106
+  port: 443
+  uuid: 30e52776-55ac-3cb4-8d36-e2910f07e2c3
+  flow: xtls-rprx-vision
+  tls: true
+  servername: u695098u7dae9c0cs220.gogocs.xyz
+  client-fingerprint: firefox
+  alpn:
+  - h2
+  - http/1.1
+  udp: true
+- name: '[JP] - 055'
+  type: trojan
+  server: brief-glider.rooster465.autos
+  port: 443
+  password: UX82473651
+  tls: true
+  sni: brief-glider.rooster465.autos
+  client-fingerprint: chrome
+  udp: true
+- name: '[US] - 1247'
+  type: vmess
+  server: 169.197.142.22
+  port: 18000
+  uuid: f8c8dc3d-0d37-46b0-8b34-a7232882fcfe
+  alterId: 0
+  cipher: auto
+  udp: true
+- name: '[GB] - 348'
+  type: vless
+  server: 107.181.151.39
+  port: 443
+  uuid: 1896c6c9-a941-4688-a865-29027bf7f8e6
+  flow: xtls-rprx-vision
+  tls: true
+  servername: www.microsoft.com
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: J-dv-HrWfQ_IOoyutv0Kg-rO8QwoRwc02dS1dS_tblk
+    short-id: 6c825bc79850
+  udp: true
+- name: '[GB] - 200'
+  type: vless
+  server: 107.181.151.39
+  port: 443
+  uuid: 4d017db2-7655-4276-9557-e2ec25b04ee7
+  flow: xtls-rprx-vision
+  tls: true
+  servername: www.tradingview.com
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: J-dv-HrWfQ_IOoyutv0Kg-rO8QwoRwc02dS1dS_tblk
+    short-id: ee1716767f9b
+  udp: true
+- name: '[GB] - 303'
+  type: vless
+  server: staging.lastilhame.monster
+  port: 443
+  uuid: aded66f1-de12-4c3c-af9e-a21d6e7d9c96
+  flow: xtls-rprx-vision
+  tls: true
+  servername: www.foxsports.com
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: FjcEZNQ8t5E4R04_11T6ghsOutdqwKKrelkuadakoQg
+    short-id: 2a80364e93d9
+  udp: true
+- name: '[NL] - 410'
+  type: vless
+  server: 94.156.79.93
+  port: 443
+  uuid: 1a5e7720-abf3-4b9b-bc9b-9a900a04b434
+  flow: xtls-rprx-vision
+  tls: true
+  servername: www.microsoft.com
+  client-fingerprint: firefox
+  reality-opts:
+    public-key: _0fpFqEEuCso3B8K7AAcMjctwG_xfCxO2PdKzGd_-hg
+    short-id: f129dcdbf64f
+  udp: true
+- name: '[GB] - 374'
+  type: vless
+  server: 107.181.151.241
+  port: 443
+  uuid: 594d466e-8ac3-4fda-b1d1-eeb817853518
+  flow: xtls-rprx-vision
+  tls: true
+  servername: www.microsoft.com
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: FjcEZNQ8t5E4R04_11T6ghsOutdqwKKrelkuadakoQg
+    short-id: 5a018643df03
+  udp: true
+- name: '[GB] - 050'
+  type: vless
+  server: 107.181.151.39
+  port: 443
+  uuid: 68cf8d29-5aa0-44b3-88a9-f1a576b6e84c
+  flow: xtls-rprx-vision
+  tls: true
+  servername: www.microsoft.com
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: J-dv-HrWfQ_IOoyutv0Kg-rO8QwoRwc02dS1dS_tblk
+    short-id: 73a9e631a09b
+  udp: true
+- name: '[SG] - 175'
+  type: vless
+  server: sg2-8sb.6121999.dpdns.org
+  port: 19825
+  uuid: 2d1ad594-80a4-4bfb-87a6-038e39701f51
+  flow: xtls-rprx-vision
+  tls: true
+  servername: sg2-8sb.6121999.dpdns.org
+  client-fingerprint: random
+  reality-opts:
+    public-key: GvvkY8xYb9QjvwvzYq_uNC4tOGd0DCxRnz6770-xgkI
+    short-id: 6ba85179e30d4fc2
+  udp: true
+- name: '[GB] - 221'
+  type: vless
+  server: staging.lastilhame.monster
+  port: 443
+  uuid: 594d466e-8ac3-4fda-b1d1-eeb817853518
+  flow: xtls-rprx-vision
+  tls: true
+  servername: www.microsoft.com
+  client-fingerprint: chrome
+  reality-opts:
+    public-key: FjcEZNQ8t5E4R04_11T6ghsOutdqwKKrelkuadakoQg
+    short-id: 5a018643df03
+  udp: true
+- name: '[XX] - 3959'
+  type: vless
+  server: support.zoom.us
+  port: 8443
+  uuid: ba9ba1d3-19c8-4792-9d3f-ddd2cdcc2e65
+  tls: true
+  servername: primelinelk.me
+  client-fingerprint: qq
+  network: ws
+  ws-opts:
+    path: /xprolk-primeline
+    headers:
+      Host: primelinelk.me
+  udp: true
+- name: '[RE-FILTER] - 1671'
+  type: trojan
+  server: mfyousheng.nl.eu.org
+  port: 443
+  password: Puj01Rc8UcA9IzcFcYOs8KMOhCz6aX2Q
+  tls: true
+  sni: mfyousheng.nl.eu.org
+  client-fingerprint: chrome
+  network: ws
+  ws-opts:
+    path: /tjwsLhx0SFASG4l9FERJ1g
+    headers:
+      Host: mfyousheng.nl.eu.org
+  udp: true
+- name: '[XX] - 1766'
+  type: vless
+  server: s170.gogocs.xyz
+  port: 443
+  uuid: 30e52776-55ac-3cb4-8d36-e2910f07e2c3
+  flow: xtls-rprx-vision
+  tls: true
+  servername: s170.gogocs.xyz
+  client-fingerprint: chrome
+  udp: true
+- name: '[RU-BLOCKED] - 3103'
+  type: vless
+  server: 3.0.111.82
+  port: 10574
+  uuid: 814bd064-544d-4255-a070-5705c03f6da9
+  flow: xtls-rprx-vision
+  tls: true
+  servername: www.apple.com
+  client-fingerprint: random
+  reality-opts:
+    public-key: k2hPp0tTW0Da-HK94wYpSCLbuK44LfGqC2MSJIM1Ti0
+    short-id: 48050fab
+  udp: true
+- name: '[US] - 1404'
+  type: vless
+  server: 13.143.137.206
+  port: 13443
+  uuid: 8ff3db5a-5f41-4f25-a8a4-7fbf00f1c319
+  flow: xtls-rprx-vision
+  tls: true
+  servername: ya.ru
+  client-fingerprint: firefox
+  reality-opts:
+    public-key: 1MLoHw7RVkGefh7XUyuGg4ndxwv4vDU9en-f9JxpXRQ
+    short-id: d2061bb1
+  udp: true
+- name: '[TH] - 004'
+  type: vless
+  server: 103.86.49.57
+  port: 80
+  uuid: 3c52e091-6714-4915-949f-2149fe69951b
+  network: ws
+  ws-opts:
+    path: /ws
+    headers:
+      Host: aIs.SpEeDtEsT.nEt
+  udp: true
+- name: '[RU-BLOCKED] - 1274'
+  type: vless
+  server: ov-germany1.09vpn.com
+  port: 80
+  uuid: 18535741-e8b3-4b43-9348-785b55936751
+  network: ws
+  ws-opts:
+    path: /vless/
+    headers:
+      Host: OV-Germany1.09vpn.com
+  udp: true
+- name: '[RU-BLOCKED] - 2519'
+  type: vless
+  server: OV-Germany1.09vpn.com
+  port: 80
+  uuid: 7d74eae4-8a06-4306-a923-ad686f30bf26
+  network: ws
+  ws-opts:
+    path: /vless/
+  udp: true
+- name: '[SG] - 181'
+  type: vless
+  server: 43.174.193.1
+  port: 443
+  uuid: d342d11e-d224-4463-b982-532309285094
+  tls: true
+  servername: ccc.010304.xyz
+  client-fingerprint: chrome
+  network: ws
+  ws-opts:
+    path: /fp
+    headers:
+      Host: ccc.010304.xyz
+  udp: true
+- name: '[RU-BLOCKED] - 4366'
+  type: trojan
+  server: real-cardinal.rooster465.autos
+  port: 443
+  password: UX82473651
+  tls: true
+  sni: real-cardinal.rooster465.autos
+  client-fingerprint: chrome
+  udp: true
+rules:
+- GEOSITE,private,DIRECT
+- GEOIP,private,DIRECT,no-resolve
+- GEOSITE,category-ads-all,REJECT
+- GEOSITE,CATEGORY-BANK-RU,🟢 Напрямую
+- GEOSITE,category-ru,🟢 Напрямую
+- GEOIP,RU,🟢 Напрямую,no-resolve
+- GEOSITE,youtube,📺 YouTube
+- GEOSITE,telegram,💬 Telegram
+- GEOSITE,openai,🤖 AI
+- GEOSITE,GOOGLE-GEMINI,🤖 AI
+- GEOSITE,RU-BLOCKED,🔓 Заблокированные
+- MATCH,🚀 Прокси
