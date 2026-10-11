@@ -1,6 +1,7 @@
-//! proxy-groups: 🚀 Прокси / ⚡ Авто / ⚖️ Баланс / 🌍 Страны / 🔓 Заблокированные /
-//! 🟢 Напрямую, затем категории (Telegram/AI/YouTube/Игры) и в конце группы по
-//! странам (включая псевдо-страны вроде Cloudflare/RU-BLOCKED).
+//! proxy-groups: сначала селекторы (🚀 Прокси / 🌍 Страны / 🔓 Заблокированные /
+//! 🟢 Напрямую и категории Telegram/AI/YouTube/Игры), затем авто-группы
+//! (♻️ Fallback / ⚡ Авто / ⚖️ Баланс) и в конце группы по странам (включая
+//! псевдо-страны вроде Cloudflare/RU-BLOCKED).
 
 use crate::{num, put, str_val, Options, DIRECT_GROUP};
 use serde_yaml_ng::{Mapping, Value as Yaml};
@@ -14,6 +15,7 @@ pub struct Entry {
 
 const AUTO: &str = "⚡ Авто";
 const BALANCE: &str = "⚖️ Баланс";
+const FALLBACK: &str = "♻️ Fallback";
 const MAIN: &str = "🚀 Прокси";
 const COUNTRIES: &str = "🌍 Страны";
 const BLOCKED: &str = "🔓 Заблокированные";
@@ -34,45 +36,55 @@ pub fn build(entries: &[Entry], opt: &Options) -> (Vec<Yaml>, usize) {
 
     let mut groups: Vec<Yaml> = Vec::new();
 
-    // 🚀 Прокси: ручной выбор верхнего уровня.
-    let mut main_members = vec![str_val("DIRECT"), str_val(AUTO), str_val(BALANCE)];
+    // Наборы для ручного выбора: авто-группы и страны (агрегат + отдельные).
+    let mut auto_picks = vec![str_val(AUTO), str_val(BALANCE), str_val(FALLBACK)];
     if has_countries {
-        main_members.push(str_val(COUNTRIES));
+        auto_picks.push(str_val(COUNTRIES));
     }
-    main_members.push(str_val(BLOCKED));
-    groups.push(select(MAIN, main_members));
+    let country_picks = if has_countries {
+        country_names.clone()
+    } else {
+        Vec::new()
+    };
 
-    groups.push(url_test(AUTO, all.clone()));
-    groups.push(load_balance(BALANCE, all));
+    // 🚀 Прокси: ручной выбор верхнего уровня.
+    let mut main_members = vec![str_val("DIRECT")];
+    main_members.extend(auto_picks.clone());
+    main_members.push(str_val(BLOCKED));
+    main_members.extend(country_picks.clone());
+    groups.push(select(MAIN, main_members));
 
     // 🌍 Страны: ручная (Manual) группа со всеми странами/псевдо-странами.
     if has_countries {
         groups.push(select(COUNTRIES, country_names.clone()));
     }
 
-    let mut blocked_members = vec![str_val(AUTO), str_val(BALANCE)];
-    if has_countries {
-        blocked_members.push(str_val(COUNTRIES));
-    }
+    // 🔓 Заблокированные: выбор для заблокированных сервисов.
+    let mut blocked_members = auto_picks.clone();
+    blocked_members.extend(country_picks.clone());
     groups.push(select(BLOCKED, blocked_members));
 
-    // Базовый набор селекторов, общий для «Напрямую» и категорий.
-    let mut base = vec![str_val(MAIN), str_val(AUTO), str_val(BALANCE)];
-    if has_countries {
-        base.push(str_val(COUNTRIES));
-    }
-    base.push(str_val(BLOCKED));
-
     // 🟢 Напрямую: ручной маршрут (DIRECT по умолчанию).
-    let mut direct_members = vec![str_val("DIRECT")];
-    direct_members.extend(base.clone());
+    let mut direct_members = vec![str_val("DIRECT"), str_val(MAIN)];
+    direct_members.extend(auto_picks.clone());
+    direct_members.push(str_val(BLOCKED));
+    direct_members.extend(country_picks.clone());
     groups.push(select(DIRECT_GROUP, direct_members));
 
     if opt.include_categories {
+        let mut cat_members = vec![str_val(MAIN)];
+        cat_members.extend(auto_picks.clone());
+        cat_members.push(str_val(BLOCKED));
+        cat_members.extend(country_picks.clone());
         for name in CATEGORIES {
-            groups.push(select(name, base.clone()));
+            groups.push(select(name, cat_members.clone()));
         }
     }
+
+    // Авто-группы без ручного выбора — ниже селекторов.
+    groups.push(fallback(FALLBACK, all.clone()));
+    groups.push(url_test(AUTO, all.clone()));
+    groups.push(load_balance(BALANCE, all));
 
     // Страны — в самом низу (их выбирают редко).
     groups.extend(country_groups);
@@ -150,6 +162,17 @@ fn url_test(name: &str, proxies: Vec<Yaml>) -> Yaml {
     Yaml::Mapping(m)
 }
 
+fn fallback(name: &str, proxies: Vec<Yaml>) -> Yaml {
+    let mut m = Mapping::new();
+    put(&mut m, "name", str_val(name));
+    put(&mut m, "type", str_val("fallback"));
+    put(&mut m, "url", str_val(TEST_URL));
+    put(&mut m, "interval", num(300));
+    put(&mut m, "lazy", Yaml::Bool(false));
+    put(&mut m, "proxies", Yaml::Sequence(proxies));
+    Yaml::Mapping(m)
+}
+
 fn load_balance(name: &str, proxies: Vec<Yaml>) -> Yaml {
     let mut m = Mapping::new();
     put(&mut m, "name", str_val(name));
@@ -191,8 +214,9 @@ mod tests {
         let (groups, countries) = build(&entries(), &Options::default());
         // 🇩🇪 DE + ☁️ CLOUDFLARE + 🌐 Прочие (XX)
         assert_eq!(countries, 3);
-        // 🚀 + ⚡ + ⚖️ + 🌍 Страны + 🔓 + 🟢 Напрямую + 3 страны + 4 категории
-        assert_eq!(groups.len(), 6 + 3 + 4);
+        // селекторы: 🚀 + 🌍 Страны + 🔓 + 🟢 Напрямую (4) + 4 категории = 8
+        // авто: ♻️ Fallback + ⚡ + ⚖️ = 3; страны: 3
+        assert_eq!(groups.len(), 8 + 3 + 3);
     }
 
     #[test]
@@ -213,6 +237,8 @@ mod tests {
         assert_eq!(members.first().copied(), Some("DIRECT"));
         assert!(members.contains(&"🚀 Прокси"));
         assert!(members.contains(&"🔓 Заблокированные"));
+        assert!(members.contains(&FALLBACK));
+        assert!(members.contains(&"🇩🇪 DE"));
     }
 
     #[test]
@@ -226,6 +252,51 @@ mod tests {
         };
         assert!(idx("💬 Telegram") < idx("☁️ CLOUDFLARE"));
         assert!(idx(DIRECT_GROUP) < idx("💬 Telegram"));
+        // авто-группы ниже селекторов, но выше страновых групп
+        assert!(idx("💬 Telegram") < idx(FALLBACK));
+        assert!(idx(AUTO) < idx("☁️ CLOUDFLARE"));
+        assert!(idx(BALANCE) < idx("☁️ CLOUDFLARE"));
+    }
+
+    #[test]
+    fn fallback_group_uses_all_proxies() {
+        let (groups, _) = build(&entries(), &Options::default());
+        let g = groups
+            .iter()
+            .find(|g| g.get("name").and_then(|n| n.as_str()) == Some(FALLBACK))
+            .expect("нет группы ♻️ Fallback");
+        assert_eq!(g.get("type").and_then(|t| t.as_str()), Some("fallback"));
+        let members: Vec<&str> = g
+            .get("proxies")
+            .and_then(|p| p.as_sequence())
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(members.len(), entries().len());
+        assert!(members.contains(&"[DE] - 001"));
+        assert!(members.contains(&"[CF] - 001"));
+    }
+
+    #[test]
+    fn selectors_include_country_groups() {
+        let (groups, _) = build(&entries(), &Options::default());
+        for name in [MAIN, BLOCKED, DIRECT_GROUP, "💬 Telegram"] {
+            let g = groups
+                .iter()
+                .find(|g| g.get("name").and_then(|n| n.as_str()) == Some(name))
+                .unwrap_or_else(|| panic!("нет группы {name}"));
+            let members: Vec<&str> = g
+                .get("proxies")
+                .and_then(|p| p.as_sequence())
+                .unwrap()
+                .iter()
+                .filter_map(|v| v.as_str())
+                .collect();
+            assert!(members.contains(&"🇩🇪 DE"), "{name}: нет 🇩🇪 DE");
+            assert!(members.contains(&"☁️ CLOUDFLARE"), "{name}: нет ☁️ CLOUDFLARE");
+            assert!(members.contains(&"🌐 Прочие"), "{name}: нет 🌐 Прочие");
+        }
     }
 
     #[test]
@@ -298,7 +369,7 @@ mod tests {
             },
         );
         assert_eq!(countries, 0);
-        assert_eq!(groups.len(), 5);
+        assert_eq!(groups.len(), 6);
         assert!(groups
             .iter()
             .all(|g| g.get("name").and_then(|n| n.as_str()) != Some("🌍 Страны")));
