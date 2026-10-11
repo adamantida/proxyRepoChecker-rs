@@ -60,7 +60,7 @@ pub struct Report {
     pub skipped: usize,
     /// Сколько стран сгруппировано
     pub countries: usize,
-    /// Сколько групп создано (включая 🚀/⚡/⚖️/🔓)
+    /// Сколько групп создано (включая 🚀/🌍/🔓/🟢 и авто ♻️/⚡/⚖️)
     pub groups: usize,
 }
 
@@ -249,7 +249,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(rep.countries, 0);
-        assert_eq!(rep.groups, 5);
+        assert_eq!(rep.groups, 6);
         assert!(!yaml.contains("Telegram"));
     }
 }
