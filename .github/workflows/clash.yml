@@ -3,7 +3,7 @@ name: clash-config
 on:
   schedule:
     # Запуск каждый час в 00 минут (UTC)
-    - cron: "0 */5 * * *"
+    - cron: "0 */3 * * *"
   workflow_dispatch:
     inputs:
       set:
@@ -61,7 +61,7 @@ jobs:
             --set "$SET" \
             --shuffle \
             --limit "$LIMIT" \
-            --min-kb 1000 \
+            --min-kb 500 \
             --clash out/clash.yaml \
             --output out/alive.txt \
             --good-output out/good.txt \
