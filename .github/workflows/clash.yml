@@ -3,7 +3,7 @@ name: clash-config
 on:
   schedule:
     # Запуск каждый час в 00 минут (UTC)
-    - cron: "0 * * * *"
+    - cron: "0 */5 * * *"
   workflow_dispatch:
     inputs:
       set:
@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   generate:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 120
     env:
       SET: ${{ github.event.inputs.set || 'all' }}
@@ -61,11 +61,12 @@ jobs:
             --set "$SET" \
             --shuffle \
             --limit "$LIMIT" \
-            --min-kb 500 \
+            --min-kb 1000 \
             --clash out/clash.yaml \
             --output out/alive.txt \
             --good-output out/good.txt \
-            --dead out/dead.txt
+            --dead out/dead.txt \
+            --batch-workers 3
 
       - name: Publish to dist branch
         working-directory: out
