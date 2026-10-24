@@ -33,7 +33,7 @@
 ## Connect
 ### Url
 `https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/clash.yaml`
-happ and other `https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist//good.txt`
+happ and other `https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/good.txt`
 ### Qr
 <img width="256" height="256" alt="qr-code" src="https://github.com/user-attachments/assets/7b86669d-715d-4f39-a396-3c2cda4ae266" />
 
