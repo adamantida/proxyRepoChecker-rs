@@ -86,10 +86,16 @@ pub fn render(sources: &[Source], opt: &Options) -> Result<(String, Report)> {
             s.name.trim().to_string()
         };
         let mut name = base.clone();
-        let mut i = 2;
-        while !used.insert(name.clone()) {
-            name = format!("{base} #{i}");
-            i += 1;
+        if !used.insert(name.clone()) {
+            // Есть не более sources.len() уже занятых имён, поэтому среди
+            // sources.len() + 1 суффиксов гарантированно найдётся свободный.
+            for suffix in 2..=sources.len().saturating_add(2) {
+                let candidate = format!("{base} #{suffix}");
+                if used.insert(candidate.clone()) {
+                    name = candidate;
+                    break;
+                }
+            }
         }
         put(&mut m, "name", str_val(&name));
 
@@ -105,17 +111,9 @@ pub fn render(sources: &[Source], opt: &Options) -> Result<(String, Report)> {
 
     let mut root = Mapping::new();
     rules::insert_globals(&mut root);
-    put(
-        &mut root,
-        "proxy-groups",
-        Yaml::Sequence(group_list),
-    );
+    put(&mut root, "proxy-groups", Yaml::Sequence(group_list));
     put(&mut root, "proxies", Yaml::Sequence(proxies));
-    put(
-        &mut root,
-        "rules",
-        rules::rules(opt.include_categories),
-    );
+    put(&mut root, "rules", rules::rules(opt.include_categories));
 
     let body = serde_yaml_ng::to_string(&Yaml::Mapping(root))?;
     let header = format!(
@@ -191,8 +189,20 @@ mod tests {
     fn renders_valid_yaml_with_groups() {
         let src = vec![
             vless("[DE] - 001", "DE", "raw", "reality", json!({})),
-            vless("[DE] - 002", "DE", "ws", "tls", json!({ "wsSettings": { "path": "/x", "host": "h.example" } })),
-            vless("[RU] - 001", "RU", "grpc", "tls", json!({ "grpcSettings": { "serviceName": "svc" } })),
+            vless(
+                "[DE] - 002",
+                "DE",
+                "ws",
+                "tls",
+                json!({ "wsSettings": { "path": "/x", "host": "h.example" } }),
+            ),
+            vless(
+                "[RU] - 001",
+                "RU",
+                "grpc",
+                "tls",
+                json!({ "grpcSettings": { "serviceName": "svc" } }),
+            ),
         ];
         let (yaml, rep) = render(&src, &Options::default()).unwrap();
         assert_eq!(rep.proxies, 3);
@@ -251,5 +261,79 @@ mod tests {
         assert_eq!(rep.countries, 0);
         assert_eq!(rep.groups, 6);
         assert!(!yaml.contains("Telegram"));
+    }
+
+    #[test]
+    fn empty_and_unsupported_inputs_still_render_parseable_yaml() {
+        let mut unsupported = vless("unknown", "XX", "raw", "none", json!({}));
+        unsupported.proto = "hysteria2".into();
+        for sources in [Vec::new(), vec![unsupported]] {
+            let (yaml, report) = render(&sources, &Options::default()).unwrap();
+            let root: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).unwrap();
+            assert!(root
+                .get("proxies")
+                .unwrap()
+                .as_sequence()
+                .unwrap()
+                .is_empty());
+            assert!(root.get("proxy-groups").unwrap().as_sequence().is_some());
+            assert!(root.get("rules").unwrap().as_sequence().is_some());
+            assert_eq!(report.proxies, 0);
+            assert_eq!(report.skipped, sources.len());
+        }
+    }
+
+    #[test]
+    fn trims_names_and_resolves_collisions_deterministically() {
+        let a = vless("  same  ", "DE", "raw", "none", json!({}));
+        let b = vless("same", "DE", "raw", "none", json!({}));
+        let c = vless("", "XX", "raw", "none", json!({}));
+        let d = vless("same", "DE", "raw", "none", json!({}));
+        let (yaml, report) = render(&[a, b, c, d], &Options::default()).unwrap();
+        let root: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).unwrap();
+        let names: Vec<&str> = root
+            .get("proxies")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|proxy| proxy.get("name").unwrap().as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["same", "same #2", "1.2.3.4:443", "same #3"]);
+        assert_eq!(report.proxies, 4);
+        assert_eq!(report.skipped, 0);
+    }
+
+    #[test]
+    fn non_object_stream_extras_are_ignored() {
+        let source = vless("proxy", "DE", "raw", "none", json!(null));
+        let (yaml, report) = render(&[source], &Options::default()).unwrap();
+
+        assert_eq!(report.proxies, 1);
+        assert!(yaml.contains("name: proxy"));
+    }
+
+    #[test]
+    fn render_report_matches_serialized_sections() {
+        let sources = vec![
+            vless("one", "DE", "raw", "none", json!({})),
+            vless("two", "RU-BLOCKED", "raw", "none", json!({})),
+        ];
+        let (yaml, report) = render(&sources, &Options::default()).unwrap();
+        let root: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert_eq!(
+            root.get("proxies").unwrap().as_sequence().unwrap().len(),
+            report.proxies
+        );
+        assert_eq!(
+            root.get("proxy-groups")
+                .unwrap()
+                .as_sequence()
+                .unwrap()
+                .len(),
+            report.groups
+        );
+        assert_eq!(report.countries, 2);
+        assert!(yaml.starts_with("# Сгенерировано proxy-rs (proxy-clash)\n"));
     }
 }

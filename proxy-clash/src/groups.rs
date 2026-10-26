@@ -137,7 +137,10 @@ fn flag(code: &str) -> Option<String> {
     }
     let mut s = String::with_capacity(8);
     for c in b {
-        s.push(char::from_u32(0x1F1E6 + (c.to_ascii_uppercase() - b'A') as u32)?);
+        s.push(
+            char::from_u32(0x1F1E6 + (c.to_ascii_uppercase() - b'A') as u32)
+                .unwrap_or(char::REPLACEMENT_CHARACTER),
+        );
     }
     Some(s)
 }
@@ -187,6 +190,14 @@ fn load_balance(name: &str, proxies: Vec<Yaml>) -> Yaml {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn find_group<'a>(groups: &'a [Yaml], name: &str) -> (usize, &'a Yaml) {
+        groups
+            .iter()
+            .enumerate()
+            .find(|(_, group)| group.get("name").and_then(Yaml::as_str) == Some(name))
+            .unwrap_or_else(|| panic!("нет группы {name}"))
+    }
 
     fn entries() -> Vec<Entry> {
         vec![
@@ -244,12 +255,7 @@ mod tests {
     #[test]
     fn categories_come_before_country_groups() {
         let (groups, _) = build(&entries(), &Options::default());
-        let idx = |name: &str| {
-            groups
-                .iter()
-                .position(|g| g.get("name").and_then(|n| n.as_str()) == Some(name))
-                .unwrap_or_else(|| panic!("нет группы {name}"))
-        };
+        let idx = |name: &str| find_group(&groups, name).0;
         assert!(idx("💬 Telegram") < idx("☁️ CLOUDFLARE"));
         assert!(idx(DIRECT_GROUP) < idx("💬 Telegram"));
         // авто-группы ниже селекторов, но выше страновых групп
@@ -279,13 +285,40 @@ mod tests {
     }
 
     #[test]
+    fn automatic_groups_have_expected_probe_and_balance_settings() {
+        let (groups, _) = build(&entries(), &Options::default());
+        let find = |name: &str| find_group(&groups, name).1;
+        let auto = find(AUTO);
+        assert_eq!(auto.get("type").and_then(Yaml::as_str), Some("url-test"));
+        assert_eq!(auto.get("url").and_then(Yaml::as_str), Some(TEST_URL));
+        assert_eq!(auto.get("interval").and_then(Yaml::as_u64), Some(300));
+        assert_eq!(auto.get("tolerance").and_then(Yaml::as_u64), Some(50));
+        assert_eq!(auto.get("lazy"), Some(&Yaml::Bool(false)));
+
+        let fallback = find(FALLBACK);
+        assert_eq!(
+            fallback.get("type").and_then(Yaml::as_str),
+            Some("fallback")
+        );
+        assert_eq!(fallback.get("lazy"), Some(&Yaml::Bool(false)));
+
+        let balance = find(BALANCE);
+        assert_eq!(
+            balance.get("type").and_then(Yaml::as_str),
+            Some("load-balance")
+        );
+        assert_eq!(
+            balance.get("strategy").and_then(Yaml::as_str),
+            Some("consistent-hashing")
+        );
+        assert_eq!(balance.get("url").and_then(Yaml::as_str), Some(TEST_URL));
+    }
+
+    #[test]
     fn selectors_include_country_groups() {
         let (groups, _) = build(&entries(), &Options::default());
         for name in [MAIN, BLOCKED, DIRECT_GROUP, "💬 Telegram"] {
-            let g = groups
-                .iter()
-                .find(|g| g.get("name").and_then(|n| n.as_str()) == Some(name))
-                .unwrap_or_else(|| panic!("нет группы {name}"));
+            let g = find_group(&groups, name).1;
             let members: Vec<&str> = g
                 .get("proxies")
                 .and_then(|p| p.as_sequence())
@@ -294,9 +327,18 @@ mod tests {
                 .filter_map(|v| v.as_str())
                 .collect();
             assert!(members.contains(&"🇩🇪 DE"), "{name}: нет 🇩🇪 DE");
-            assert!(members.contains(&"☁️ CLOUDFLARE"), "{name}: нет ☁️ CLOUDFLARE");
+            assert!(
+                members.contains(&"☁️ CLOUDFLARE"),
+                "{name}: нет ☁️ CLOUDFLARE"
+            );
             assert!(members.contains(&"🌐 Прочие"), "{name}: нет 🌐 Прочие");
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "нет группы missing")]
+    fn missing_group_lookup_reports_the_requested_name() {
+        find_group(&[], "missing");
     }
 
     #[test]
@@ -314,7 +356,10 @@ mod tests {
         assert!(names.contains(&"🇩🇪 DE"));
         assert!(names.contains(&"☁️ CLOUDFLARE"));
         assert!(names.contains(&"🌐 Прочие"));
-        assert_eq!(countries_group.get("type").and_then(|t| t.as_str()), Some("select"));
+        assert_eq!(
+            countries_group.get("type").and_then(|t| t.as_str()),
+            Some("select")
+        );
     }
 
     #[test]
@@ -351,6 +396,8 @@ mod tests {
         assert!(flag("XX").is_some());
         assert!(flag("CLOUDFLARE").is_none());
         assert!(flag("").is_none());
+        assert!(flag("A1").is_none());
+        assert!(flag("ABC").is_none());
     }
 
     #[test]
@@ -376,5 +423,66 @@ mod tests {
         assert!(groups
             .iter()
             .any(|g| g.get("name").and_then(|n| n.as_str()) == Some(DIRECT_GROUP)));
+    }
+
+    #[test]
+    fn empty_entries_keep_only_empty_auto_groups_when_features_disabled() {
+        let (groups, countries) = build(
+            &[],
+            &Options {
+                include_country: false,
+                include_categories: false,
+            },
+        );
+        assert_eq!(countries, 0);
+        assert_eq!(groups.len(), 6);
+        for group in &groups {
+            let kind = group.get("type").and_then(Yaml::as_str).unwrap();
+            if matches!(kind, "fallback" | "url-test" | "load-balance") {
+                assert!(group
+                    .get("proxies")
+                    .and_then(Yaml::as_sequence)
+                    .unwrap()
+                    .is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn country_codes_are_trimmed_case_insensitively_and_sorted() {
+        let src = vec![
+            Entry {
+                name: "b".into(),
+                country: " de ".into(),
+            },
+            Entry {
+                name: "a".into(),
+                country: "DE".into(),
+            },
+            Entry {
+                name: "c".into(),
+                country: "".into(),
+            },
+            Entry {
+                name: "d".into(),
+                country: "xx".into(),
+            },
+        ];
+        let (groups, count) = build(&src, &Options::default());
+        assert_eq!(count, 2);
+        let country_names: Vec<&str> = groups
+            .iter()
+            .filter_map(|group| group.get("name").and_then(Yaml::as_str))
+            .filter(|name| name.starts_with("🇩🇪") || *name == OTHER)
+            .collect();
+        assert_eq!(country_names, ["🇩🇪 DE", OTHER]);
+        let de = groups
+            .iter()
+            .find(|group| group.get("name").and_then(Yaml::as_str) == Some("🇩🇪 DE"))
+            .unwrap();
+        assert_eq!(
+            de.get("proxies").and_then(Yaml::as_sequence).unwrap().len(),
+            2
+        );
     }
 }

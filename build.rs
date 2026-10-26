@@ -61,18 +61,13 @@ fn profile_dir(out_dir: &str, profile: &str) -> Option<PathBuf> {
     let out = PathBuf::from(out_dir);
     let ancestors: Vec<&Path> = out.ancestors().collect();
     for (i, a) in ancestors.iter().enumerate() {
-        let is_profile = a
-            .file_name()
-            .map(|n| n == profile)
-            .unwrap_or(false);
+        let is_profile = a.file_name().map(|n| n == profile).unwrap_or(false);
         if !is_profile {
             continue;
         }
-        let under_target = ancestors[i + 1..].iter().any(|p| {
-            p.file_name()
-                .map(|n| n == "target")
-                .unwrap_or(false)
-        });
+        let under_target = ancestors[i + 1..]
+            .iter()
+            .any(|p| p.file_name().map(|n| n == "target").unwrap_or(false));
         if under_target {
             return Some(a.to_path_buf());
         }

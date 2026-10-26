@@ -52,11 +52,19 @@ pub struct Cli {
     pub url: Vec<String>,
 
     /// Параллельных загрузок источников
-    #[arg(long = "fetch-concurrency", default_value_t = 32, help_heading = "Источники")]
+    #[arg(
+        long = "fetch-concurrency",
+        default_value_t = 32,
+        help_heading = "Источники"
+    )]
     pub fetch_concurrency: usize,
 
-    /// Таймаут загрузки источника, сек
-    #[arg(long = "fetch-timeout", default_value_t = 15.0, help_heading = "Источники")]
+    /// Таймаут загрузки источника, сек (1..=3600)
+    #[arg(
+        long = "fetch-timeout",
+        default_value_t = 15.0,
+        help_heading = "Источники"
+    )]
     pub fetch_timeout: f64,
 
     // ------------------------------ Вывод ------------------------------
@@ -72,7 +80,7 @@ pub struct Cli {
     #[arg(long, help_heading = "Вывод")]
     pub dead: Option<String>,
 
-    /// Проверять только первые N прокси
+    /// Проверять только первые N прокси (N > 0)
     #[arg(short = 'n', long = "limit", value_name = "N", help_heading = "Вывод")]
     pub limit: Option<usize>,
 
@@ -85,7 +93,11 @@ pub struct Cli {
     pub raw_output: String,
 
     /// Уникальные прокси до проверок (сохраняется после парсинга и GeoIP)
-    #[arg(long = "parsed-output", default_value = "parsed.txt", help_heading = "Вывод")]
+    #[arg(
+        long = "parsed-output",
+        default_value = "parsed.txt",
+        help_heading = "Вывод"
+    )]
     pub parsed_output: String,
 
     /// Сгенерировать Clash/mihomo конфиг из good-прокси (без значения — clash.yaml)
@@ -108,18 +120,18 @@ pub struct Cli {
 
     // --------------------------- Ядро (xray) ---------------------------
     /// Путь к ядру (xray)
-    #[arg(long, default_value = "xray.exe", help_heading = "Ядро (xray)")]
+    #[arg(long, default_value_t = crate::xray::core_bin_name().to_string(), help_heading = "Ядро (xray)")]
     pub core: String,
 
     /// Рабочая папка для батч-конфигов
     #[arg(long, default_value = ".proxy_runtime", help_heading = "Ядро (xray)")]
     pub workdir: String,
 
-    /// Прокси в одном батче xray
+    /// Прокси в одном батче xray (1..=10000)
     #[arg(long, default_value_t = 100, help_heading = "Ядро (xray)")]
     pub batch: usize,
 
-    /// Базовый локальный порт для socks-inbound'ов
+    /// Базовый локальный порт для socks-inbound'ов (1024..=65000)
     #[arg(long = "lport", default_value_t = 10000, help_heading = "Ядро (xray)")]
     pub lport: u16,
 
@@ -127,8 +139,12 @@ pub struct Cli {
     #[arg(long, default_value_t = 8, help_heading = "Ядро (xray)")]
     pub batch_workers: usize,
 
-    /// Сколько секунд ждать старт ядра
-    #[arg(long = "core-start-timeout", default_value_t = 8.0, help_heading = "Ядро (xray)")]
+    /// Сколько секунд ждать старт ядра (1..=3600)
+    #[arg(
+        long = "core-start-timeout",
+        default_value_t = 8.0,
+        help_heading = "Ядро (xray)"
+    )]
     pub core_start_timeout: f64,
 
     /// URL для скачивания ядра (по умолчанию — релиз XTLS/Xray-core под текущую ОС)
@@ -144,24 +160,44 @@ pub struct Cli {
     #[arg(long = "no-tcp-ping", help_heading = "TCP ping (префильтр)")]
     pub no_tcp_ping: bool,
 
-    /// Таймаут TCP-коннекта, сек
-    #[arg(long = "tcp-timeout", default_value_t = 3.0, help_heading = "TCP ping (префильтр)")]
+    /// Таймаут TCP-коннекта, сек (0.1..=3600)
+    #[arg(
+        long = "tcp-timeout",
+        default_value_t = 3.0,
+        help_heading = "TCP ping (префильтр)"
+    )]
     pub tcp_timeout: f64,
 
     /// Параллельных TCP-проб
-    #[arg(long = "tcp-concurrency", default_value_t = 1000, help_heading = "TCP ping (префильтр)")]
+    #[arg(
+        long = "tcp-concurrency",
+        default_value_t = 1000,
+        help_heading = "TCP ping (префильтр)"
+    )]
     pub tcp_concurrency: usize,
 
-    /// Попыток TCP-пробы на адрес
-    #[arg(long = "tcp-retries", default_value_t = 1, help_heading = "TCP ping (префильтр)")]
+    /// Попыток TCP-пробы на адрес (1..=100)
+    #[arg(
+        long = "tcp-retries",
+        default_value_t = 1,
+        help_heading = "TCP ping (префильтр)"
+    )]
     pub tcp_retries: u32,
 
     /// Максимальный TCP RTT, мс (0 = не фильтровать)
-    #[arg(long = "tcp-max-ms", default_value_t = 0, help_heading = "TCP ping (префильтр)")]
+    #[arg(
+        long = "tcp-max-ms",
+        default_value_t = 0,
+        help_heading = "TCP ping (префильтр)"
+    )]
     pub tcp_max_ms: u64,
 
     /// Отбрасывать живые с TCP ping выше этого (0 = выключено)
-    #[arg(long = "max-ping", default_value_t = 0, help_heading = "TCP ping (префильтр)")]
+    #[arg(
+        long = "max-ping",
+        default_value_t = 0,
+        help_heading = "TCP ping (префильтр)"
+    )]
     pub max_ping: u64,
 
     // ------------------------ Проверка скорости ------------------------
@@ -170,27 +206,51 @@ pub struct Cli {
     pub no_speed: bool,
 
     /// Приоритетный URL для замера скорости
-    #[arg(long = "speed-url", value_name = "URL", help_heading = "Проверка скорости")]
+    #[arg(
+        long = "speed-url",
+        value_name = "URL",
+        help_heading = "Проверка скорости"
+    )]
     pub speed_url: Option<String>,
 
-    /// Таймаут скачивания при замере скорости, сек
-    #[arg(long = "speed-timeout", default_value_t = 6.0, help_heading = "Проверка скорости")]
+    /// Таймаут скачивания при замере скорости, сек (1..=3600)
+    #[arg(
+        long = "speed-timeout",
+        default_value_t = 6.0,
+        help_heading = "Проверка скорости"
+    )]
     pub speed_timeout: f64,
 
-    /// Таймаут соединения при замере скорости, сек
-    #[arg(long = "speed-connect-timeout", default_value_t = 3.0, help_heading = "Проверка скорости")]
+    /// Таймаут соединения при замере скорости, сек (1..=3600)
+    #[arg(
+        long = "speed-connect-timeout",
+        default_value_t = 3.0,
+        help_heading = "Проверка скорости"
+    )]
     pub speed_connect_timeout: f64,
 
-    /// Максимум скачиваемого МБ на замер
-    #[arg(long = "speed-max-mb", default_value_t = 5.0, help_heading = "Проверка скорости")]
+    /// Максимум скачиваемого МБ на замер (0.5..=1024)
+    #[arg(
+        long = "speed-max-mb",
+        default_value_t = 5.0,
+        help_heading = "Проверка скорости"
+    )]
     pub speed_max_mb: f64,
 
     /// Минимальная скорость, KB/s (меньше = мусор)
-    #[arg(long = "min-kb", default_value_t = 100.0, help_heading = "Проверка скорости")]
+    #[arg(
+        long = "min-kb",
+        default_value_t = 100.0,
+        help_heading = "Проверка скорости"
+    )]
     pub min_kb: f64,
 
     /// Параллельных замеров скорости
-    #[arg(long = "speed-threads", default_value_t = 16, help_heading = "Проверка скорости")]
+    #[arg(
+        long = "speed-threads",
+        default_value_t = 16,
+        help_heading = "Проверка скорости"
+    )]
     pub speed_threads: usize,
 
     // ------------------------------- GeoIP -----------------------------
@@ -210,4 +270,162 @@ pub struct Cli {
         default_value = "https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/geoip.dat"
     )]
     pub geoip_url: String,
+}
+
+impl Cli {
+    pub fn validate(&self) -> Result<(), String> {
+        for (name, value, min, max) in [
+            ("--fetch-timeout", self.fetch_timeout, 1.0, 3600.0),
+            ("--core-start-timeout", self.core_start_timeout, 1.0, 3600.0),
+            ("--tcp-timeout", self.tcp_timeout, 0.1, 3600.0),
+            ("--speed-timeout", self.speed_timeout, 1.0, 3600.0),
+            (
+                "--speed-connect-timeout",
+                self.speed_connect_timeout,
+                1.0,
+                3600.0,
+            ),
+        ] {
+            if !value.is_finite() || !(min <= value && value <= max) {
+                return Err(format!(
+                    "{name} должен быть конечным числом в диапазоне {min}..={max}"
+                ));
+            }
+        }
+        for (name, value, min, max) in [
+            ("--speed-max-mb", self.speed_max_mb, 0.5, 1024.0),
+            ("--min-kb", self.min_kb, 0.0, 1_000_000_000.0),
+        ] {
+            if !value.is_finite() || value < min || value > max {
+                return Err(format!(
+                    "{name} должен быть конечным числом в диапазоне {min}..={max}"
+                ));
+            }
+        }
+        for (name, value, max) in [
+            ("--fetch-concurrency", self.fetch_concurrency, 4096),
+            ("--batch", self.batch, 10000),
+            ("--batch-workers", self.batch_workers, 1024),
+            ("--speed-threads", self.speed_threads, 4096),
+            ("--tcp-concurrency", self.tcp_concurrency, 65536),
+        ] {
+            if value == 0 || value > max {
+                return Err(format!("{name} должен быть в диапазоне 1..={max}"));
+            }
+        }
+        if !(1024..=65000).contains(&self.lport) {
+            return Err("--lport должен быть в диапазоне 1024..=65000".into());
+        }
+        if !(1..=100).contains(&self.tcp_retries) {
+            return Err("--tcp-retries должен быть в диапазоне 1..=100".into());
+        }
+        if self.limit == Some(0) {
+            return Err("--limit должен быть больше 0".into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Cli;
+    use clap::Parser;
+
+    fn defaults() -> Cli {
+        Cli::try_parse_from(["proxy-rs"]).unwrap()
+    }
+
+    #[test]
+    fn defaults_are_valid_and_use_platform_core_name() {
+        let cli = defaults();
+        assert!(cli.validate().is_ok());
+        assert_eq!(cli.core, crate::xray::core_bin_name());
+    }
+
+    #[test]
+    fn rejects_non_finite_and_out_of_range_timeouts() {
+        for (field, min) in [
+            ("fetch", 1.0),
+            ("core", 1.0),
+            ("tcp", 0.1),
+            ("speed", 1.0),
+            ("speed-connect", 1.0),
+        ] {
+            for value in [f64::NAN, f64::INFINITY, min - 0.01, 3600.1] {
+                let mut cli = defaults();
+                let option = match field {
+                    "fetch" => {
+                        cli.fetch_timeout = value;
+                        "--fetch-timeout"
+                    }
+                    "core" => {
+                        cli.core_start_timeout = value;
+                        "--core-start-timeout"
+                    }
+                    "tcp" => {
+                        cli.tcp_timeout = value;
+                        "--tcp-timeout"
+                    }
+                    "speed" => {
+                        cli.speed_timeout = value;
+                        "--speed-timeout"
+                    }
+                    _ => {
+                        cli.speed_connect_timeout = value;
+                        "--speed-connect-timeout"
+                    }
+                };
+                assert!(cli.validate().unwrap_err().contains(option));
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_speed_limits() {
+        for value in [f64::NAN, f64::INFINITY, 0.49, -1.0, 1024.1] {
+            let mut cli = defaults();
+            cli.speed_max_mb = value;
+            assert!(cli.validate().unwrap_err().contains("--speed-max-mb"));
+        }
+        let mut cli = defaults();
+        cli.min_kb = f64::NAN;
+        assert!(cli.validate().unwrap_err().contains("--min-kb"));
+    }
+
+    #[test]
+    fn rejects_zero_or_excessive_concurrency_and_batches() {
+        let mut cli = defaults();
+        cli.fetch_concurrency = 0;
+        assert!(cli.validate().unwrap_err().contains("--fetch-concurrency"));
+        let mut cli = defaults();
+        cli.batch = 10001;
+        assert!(cli.validate().unwrap_err().contains("--batch"));
+    }
+
+    #[test]
+    fn validates_port_retries_and_limit() {
+        let mut cli = defaults();
+        cli.lport = 1023;
+        assert!(cli.validate().unwrap_err().contains("--lport"));
+        let mut cli = defaults();
+        cli.tcp_retries = 0;
+        assert!(cli.validate().unwrap_err().contains("--tcp-retries"));
+        let mut cli = defaults();
+        cli.limit = Some(0);
+        assert!(cli.validate().unwrap_err().contains("--limit"));
+    }
+
+    #[test]
+    fn accepts_documented_upper_boundaries() {
+        let mut cli = defaults();
+        cli.fetch_timeout = 3600.0;
+        cli.tcp_timeout = 3600.0;
+        cli.speed_timeout = 3600.0;
+        cli.speed_connect_timeout = 3600.0;
+        cli.core_start_timeout = 3600.0;
+        cli.speed_max_mb = 1024.0;
+        cli.lport = 65000;
+        cli.tcp_retries = 100;
+        assert!(cli.validate().is_ok());
+    }
 }

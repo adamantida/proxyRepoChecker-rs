@@ -35,7 +35,11 @@ pub fn to_clash(s: &Source) -> Option<Mapping> {
             put(&mut m, "type", str_val("trojan"));
             put(&mut m, "server", str_val(&s.server));
             put(&mut m, "port", num(s.port as u64));
-            put(&mut m, "password", str_val(jstr(st, "password").unwrap_or("")));
+            put(
+                &mut m,
+                "password",
+                str_val(jstr(st, "password").unwrap_or("")),
+            );
         }
         "shadowsocks" => {
             put(&mut m, "type", str_val("ss"));
@@ -46,7 +50,11 @@ pub fn to_clash(s: &Source) -> Option<Mapping> {
                 "cipher",
                 str_val(&normalize_ss_method(jstr(st, "method").unwrap_or("none"))),
             );
-            put(&mut m, "password", str_val(jstr(st, "password").unwrap_or("")));
+            put(
+                &mut m,
+                "password",
+                str_val(jstr(st, "password").unwrap_or("")),
+            );
         }
         _ => return None,
     }
@@ -61,7 +69,11 @@ fn apply_stream(m: &mut Mapping, proto: &str, stream: Option<&Value>) {
     let net = stream.and_then(|v| jstr(v, "network")).unwrap_or("raw");
     let sec = stream.and_then(|v| jstr(v, "security")).unwrap_or("none");
     // trojan в mihomo использует `sni`, остальные — `servername`.
-    let sni_key = if proto == "trojan" { "sni" } else { "servername" };
+    let sni_key = if proto == "trojan" {
+        "sni"
+    } else {
+        "servername"
+    };
 
     match sec {
         "tls" => {
@@ -197,4 +209,311 @@ fn jstr<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
 
 fn jbool(v: &Value, key: &str) -> bool {
     v.get(key).and_then(|x| x.as_bool()).unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn source(proto: &str, settings: Value, stream: Option<Value>) -> Source {
+        Source {
+            proto: proto.into(),
+            name: "proxy".into(),
+            server: "proxy.example".into(),
+            port: 443,
+            country: "DE".into(),
+            settings,
+            stream,
+        }
+    }
+
+    fn string<'a>(mapping: &'a Mapping, key: &str) -> Option<&'a str> {
+        mapping.get(str_val(key)).and_then(Yaml::as_str)
+    }
+
+    #[test]
+    fn maps_protocol_credentials_and_defaults() {
+        let cases = [
+            (
+                source("vless", json!({"id":"uuid", "flow":"vision"}), None),
+                "vless",
+                "uuid",
+            ),
+            (
+                source("vmess", json!({"id":"uuid", "security":"none"}), None),
+                "vmess",
+                "uuid",
+            ),
+            (
+                source("trojan", json!({"password":"secret"}), None),
+                "trojan",
+                "secret",
+            ),
+            (
+                source(
+                    "shadowsocks",
+                    json!({"method":"plain", "password":"secret"}),
+                    None,
+                ),
+                "ss",
+                "secret",
+            ),
+        ];
+
+        for (src, expected_type, expected_credential) in cases {
+            let proxy = to_clash(&src).expect("supported protocol");
+            assert_eq!(string(&proxy, "type"), Some(expected_type));
+            assert_eq!(string(&proxy, "server"), Some("proxy.example"));
+            assert_eq!(proxy.get(str_val("port")).and_then(Yaml::as_u64), Some(443));
+            assert_eq!(proxy.get(str_val("udp")), Some(&Yaml::Bool(true)));
+            let credential = if expected_type == "ss" {
+                "password"
+            } else {
+                "uuid"
+            };
+            let credential = if expected_type == "trojan" || expected_type == "ss" {
+                "password"
+            } else {
+                credential
+            };
+            assert_eq!(string(&proxy, credential), Some(expected_credential));
+        }
+    }
+
+    #[test]
+    fn protocol_specific_optional_values_and_invalid_types_use_defaults() {
+        let vless = to_clash(&source("vless", json!({"id": 12, "flow": ""}), None)).unwrap();
+        assert_eq!(string(&vless, "uuid"), Some(""));
+        assert!(!vless.contains_key(str_val("flow")));
+
+        for security in ["", "none", "chacha20-ietf-poly1305"] {
+            let vmess = to_clash(&source("vmess", json!({"security": security}), None)).unwrap();
+            assert_eq!(
+                string(&vmess, "cipher"),
+                Some(if security.is_empty() || security == "none" {
+                    "auto"
+                } else {
+                    security
+                })
+            );
+            assert_eq!(
+                vmess.get(str_val("alterId")).and_then(Yaml::as_u64),
+                Some(0)
+            );
+        }
+
+        let ss = to_clash(&source("shadowsocks", json!({"method": 3}), None)).unwrap();
+        assert_eq!(string(&ss, "cipher"), Some("none"));
+        assert_eq!(string(&ss, "password"), Some(""));
+        assert!(to_clash(&source("hysteria2", json!({}), None)).is_none());
+    }
+
+    #[test]
+    fn normalizes_shadowsocks_methods_case_and_whitespace() {
+        assert_eq!(
+            normalize_ss_method(" CHACHA20-POLY1305 "),
+            "chacha20-ietf-poly1305"
+        );
+        assert_eq!(
+            normalize_ss_method("xchacha20-poly1305"),
+            "xchacha20-ietf-poly1305"
+        );
+        assert_eq!(normalize_ss_method("PLAIN"), "none");
+        assert_eq!(normalize_ss_method("aes-128-gcm"), "aes-128-gcm");
+    }
+
+    #[test]
+    fn maps_tls_fields_and_filters_invalid_alpn_values() {
+        let src = source(
+            "vless",
+            json!({"id":"id"}),
+            Some(json!({"network":"tcp", "security":"tls", "tlsSettings":{
+                "serverName":"sni.example", "fingerprint":"firefox", "allowInsecure":true,
+                "alpn":["h2", "", 4, "http/1.1"]
+            }})),
+        );
+        let proxy = to_clash(&src).unwrap();
+        assert_eq!(proxy.get(str_val("tls")), Some(&Yaml::Bool(true)));
+        assert_eq!(string(&proxy, "servername"), Some("sni.example"));
+        assert_eq!(string(&proxy, "client-fingerprint"), Some("firefox"));
+        assert_eq!(
+            proxy.get(str_val("skip-cert-verify")),
+            Some(&Yaml::Bool(true))
+        );
+        assert_eq!(
+            proxy
+                .get(str_val("alpn"))
+                .and_then(Yaml::as_sequence)
+                .unwrap(),
+            &vec![str_val("h2"), str_val("http/1.1")]
+        );
+
+        let no_sni = to_clash(&source(
+            "vless",
+            json!({}),
+            Some(json!({
+                "security":"tls", "tlsSettings":{"serverName":"", "fingerprint":"", "alpn":["", 1]}
+            })),
+        ))
+        .unwrap();
+        assert!(!no_sni.contains_key(str_val("servername")));
+        assert!(!no_sni.contains_key(str_val("client-fingerprint")));
+        assert!(!no_sni.contains_key(str_val("alpn")));
+        assert!(!no_sni.contains_key(str_val("skip-cert-verify")));
+    }
+
+    #[test]
+    fn maps_reality_defaults_and_trojan_sni_key() {
+        let vless = to_clash(&source(
+            "vless",
+            json!({}),
+            Some(json!({
+                "security":"reality", "realitySettings":{"password":"pub", "shortId":"01"}
+            })),
+        ))
+        .unwrap();
+        assert_eq!(string(&vless, "client-fingerprint"), Some("chrome"));
+        let reality = vless
+            .get(str_val("reality-opts"))
+            .and_then(Yaml::as_mapping)
+            .unwrap();
+        assert_eq!(string(reality, "public-key"), Some("pub"));
+        assert_eq!(string(reality, "short-id"), Some("01"));
+
+        let fingerprint = to_clash(&source(
+            "vless",
+            json!({}),
+            Some(json!({
+                "security":"reality", "realitySettings":{"fingerprint":"firefox"}
+            })),
+        ))
+        .unwrap();
+        assert_eq!(string(&fingerprint, "client-fingerprint"), Some("firefox"));
+
+        let trojan = to_clash(&source(
+            "trojan",
+            json!({}),
+            Some(json!({
+                "security":"reality", "realitySettings":{"serverName":"sni.example"}
+            })),
+        ))
+        .unwrap();
+        assert_eq!(string(&trojan, "sni"), Some("sni.example"));
+        assert!(!trojan.contains_key(str_val("servername")));
+        assert!(!trojan.contains_key(str_val("reality-opts")));
+    }
+
+    #[test]
+    fn maps_supported_networks_and_transport_options() {
+        let raw = to_clash(&source("vless", json!({}), None)).unwrap();
+        assert!(!raw.contains_key(str_val("network")));
+
+        let ws = to_clash(&source(
+            "vless",
+            json!({}),
+            Some(json!({"network":"ws", "wsSettings":{
+                "path":"/socket", "host":"ws.example"
+            }})),
+        ))
+        .unwrap();
+        assert_eq!(string(&ws, "network"), Some("ws"));
+        let ws_opts = ws
+            .get(str_val("ws-opts"))
+            .and_then(Yaml::as_mapping)
+            .unwrap();
+        assert_eq!(string(ws_opts, "path"), Some("/socket"));
+        assert_eq!(
+            string(
+                ws_opts
+                    .get(str_val("headers"))
+                    .and_then(Yaml::as_mapping)
+                    .unwrap(),
+                "Host"
+            ),
+            Some("ws.example")
+        );
+
+        let upgrade = to_clash(&source(
+            "vless",
+            json!({}),
+            Some(json!({"network":"httpupgrade", "httpupgradeSettings":{
+                "path":"/upgrade", "host":"upgrade.example"
+            }})),
+        ))
+        .unwrap();
+        assert_eq!(string(&upgrade, "network"), Some("ws"));
+        let upgrade_opts = upgrade
+            .get(str_val("ws-opts"))
+            .and_then(Yaml::as_mapping)
+            .unwrap();
+        assert_eq!(
+            upgrade_opts.get(str_val("v2ray-http-upgrade")),
+            Some(&Yaml::Bool(true))
+        );
+        assert_eq!(string(upgrade_opts, "path"), Some("/upgrade"));
+
+        let grpc = to_clash(&source(
+            "vless",
+            json!({}),
+            Some(json!({"network":"grpc", "grpcSettings":{"serviceName":"svc"}})),
+        ))
+        .unwrap();
+        assert_eq!(string(&grpc, "network"), Some("grpc"));
+        let grpc_opts = grpc
+            .get(str_val("grpc-opts"))
+            .and_then(Yaml::as_mapping)
+            .unwrap();
+        assert_eq!(string(grpc_opts, "grpc-service-name"), Some("svc"));
+
+        let xhttp = to_clash(&source(
+            "vless",
+            json!({}),
+            Some(json!({"network":"xhttp", "xhttpSettings":{
+                "path":"/x", "host":"x.example", "mode":"packet-up"
+            }})),
+        ))
+        .unwrap();
+        assert_eq!(string(&xhttp, "network"), Some("xhttp"));
+        let xhttp_opts = xhttp
+            .get(str_val("xhttp-opts"))
+            .and_then(Yaml::as_mapping)
+            .unwrap();
+        assert_eq!(string(xhttp_opts, "path"), Some("/x"));
+        assert_eq!(string(xhttp_opts, "host"), Some("x.example"));
+        assert_eq!(string(xhttp_opts, "mode"), Some("packet-up"));
+
+        let kcp = to_clash(&source("vless", json!({}), Some(json!({"network":"kcp"})))).unwrap();
+        assert_eq!(string(&kcp, "network"), Some("kcp"));
+    }
+
+    #[test]
+    fn malformed_stream_settings_are_ignored_without_panicking() {
+        for stream in [
+            json!(null),
+            json!("bad"),
+            json!({"network": 4, "security": false}),
+            json!({"network":"ws", "wsSettings": 1}),
+            json!({"network":"grpc", "grpcSettings":{"serviceName": 7}}),
+            json!({"network":"xhttp", "xhttpSettings":[]}),
+        ] {
+            let proxy = to_clash(&source("vless", json!({}), Some(stream))).unwrap();
+            assert_eq!(proxy.get(str_val("udp")), Some(&Yaml::Bool(true)));
+        }
+    }
+
+    #[test]
+    fn missing_protocol_settings_are_ignored() {
+        let cases = [
+            json!({"security":"tls"}),
+            json!({"security":"reality"}),
+            json!({"network":"grpc"}),
+            json!({"network":"xhttp"}),
+        ];
+
+        for stream in cases {
+            let proxy = to_clash(&source("vless", json!({}), Some(stream))).unwrap();
+            assert_eq!(proxy.get(str_val("udp")), Some(&Yaml::Bool(true)));
+        }
+    }
 }
