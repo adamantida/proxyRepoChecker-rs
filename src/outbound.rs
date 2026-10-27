@@ -394,6 +394,27 @@ mod tests {
     }
 
     #[test]
+    fn build_stream_omits_empty_optional_tls_options() {
+        let stream = build_stream(
+            "raw",
+            "tls",
+            &params(&[("alpn", " , "), ("pcs", ""), ("vcn", ""), ("ech", "")]),
+            "node.example",
+        )
+        .unwrap();
+
+        let tls = &stream["tlsSettings"];
+        for key in [
+            "alpn",
+            "pinnedPeerCertSha256",
+            "verifyPeerCertByName",
+            "echConfigList",
+        ] {
+            assert!(tls.get(key).is_none(), "empty {key} must be omitted");
+        }
+    }
+
+    #[test]
     fn build_stream_uses_host_then_address_and_default_fingerprint() {
         let host_stream = build_stream(
             "raw",

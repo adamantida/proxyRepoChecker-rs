@@ -67,6 +67,62 @@ pub struct Cli {
     )]
     pub fetch_timeout: f64,
 
+    /// Повторные попытки загрузки после временной ошибки (0..=8)
+    #[arg(
+        long = "fetch-retries",
+        default_value_t = 2,
+        help_heading = "Источники"
+    )]
+    pub fetch_retries: usize,
+
+    /// Максимальный размер ответа одного источника в байтах (1 KiB..=1 GiB)
+    #[arg(long = "max-source-bytes", default_value_t = crate::fetch::DEFAULT_MAX_SOURCE_BYTES, help_heading = "Источники")]
+    pub max_source_bytes: usize,
+
+    /// Разрешить недоверенные TLS-сертификаты источников (небезопасно)
+    #[arg(long = "insecure-source-tls", help_heading = "Источники")]
+    pub insecure_source_tls: bool,
+
+    /// Каталог кэша подписок; по умолчанию .proxy_cache
+    #[arg(
+        long = "fetch-cache-dir",
+        default_value = ".proxy_cache",
+        help_heading = "Источники"
+    )]
+    pub fetch_cache_dir: String,
+
+    /// Отключить кэш подписок
+    #[arg(long = "no-fetch-cache", help_heading = "Источники")]
+    pub no_fetch_cache: bool,
+
+    /// Сохранить безопасный JSON-отчёт качества источников
+    #[arg(long = "source-report", value_name = "FILE", help_heading = "Вывод")]
+    pub source_report: Option<String>,
+
+    /// Сохранять checkpoint каждого завершённого этапа в этот файл
+    #[arg(long, value_name = "FILE", help_heading = "Вывод")]
+    pub checkpoint: Option<String>,
+
+    /// Продолжить обработку из checkpoint (--checkpoint обязателен)
+    #[arg(long, help_heading = "Источники")]
+    pub resume: bool,
+
+    /// Фильтровать по протоколу; можно указать несколько раз или через запятую
+    #[arg(long, value_delimiter = ',', action = clap::ArgAction::Append, help_heading = "Фильтры")]
+    pub protocol: Vec<String>,
+
+    /// Фильтровать по ISO-коду страны или GeoIP-тегу; можно повторять
+    #[arg(long, value_delimiter = ',', action = clap::ArgAction::Append, help_heading = "Фильтры")]
+    pub country: Vec<String>,
+
+    /// Оставить только прокси, которых нет в текущем --output файле
+    #[arg(long, help_heading = "Фильтры")]
+    pub only_new: bool,
+
+    /// Записать JSON-массив результатов без URI-учётных данных
+    #[arg(long, value_name = "FILE", help_heading = "Вывод")]
+    pub json_output: Option<String>,
+
     // ------------------------------ Вывод ------------------------------
     /// Файл с живыми (сортировка по ping)
     #[arg(short = 'o', long, default_value = "alive.txt", help_heading = "Вывод")]
@@ -313,6 +369,12 @@ impl Cli {
                 return Err(format!("{name} должен быть в диапазоне 1..={max}"));
             }
         }
+        if self.fetch_retries > 8 {
+            return Err("--fetch-retries должен быть в диапазоне 0..=8".into());
+        }
+        if !(1024..=1_073_741_824).contains(&self.max_source_bytes) {
+            return Err("--max-source-bytes должен быть в диапазоне 1024..=1073741824".into());
+        }
         if !(1024..=65000).contains(&self.lport) {
             return Err("--lport должен быть в диапазоне 1024..=65000".into());
         }
@@ -321,6 +383,19 @@ impl Cli {
         }
         if self.limit == Some(0) {
             return Err("--limit должен быть больше 0".into());
+        }
+        if self.resume && self.checkpoint.is_none() {
+            return Err("--resume требует указать --checkpoint FILE".into());
+        }
+        for protocol in &self.protocol {
+            if !["vless", "vmess", "trojan", "shadowsocks"]
+                .contains(&protocol.to_ascii_lowercase().as_str())
+            {
+                return Err(format!("неподдерживаемый фильтр --protocol: {protocol}"));
+            }
+        }
+        if self.country.iter().any(|country| country.trim().is_empty()) {
+            return Err("--country не может быть пустым".into());
         }
         Ok(())
     }
@@ -413,6 +488,57 @@ mod tests {
         let mut cli = defaults();
         cli.limit = Some(0);
         assert!(cli.validate().unwrap_err().contains("--limit"));
+    }
+
+    #[test]
+    fn rejects_invalid_fetch_options_resume_filters_and_empty_countries() {
+        let mut cli = defaults();
+        cli.fetch_retries = 9;
+        assert!(cli.validate().unwrap_err().contains("--fetch-retries"));
+
+        for value in [1023, 1_073_741_825] {
+            let mut cli = defaults();
+            cli.max_source_bytes = value;
+            assert!(cli.validate().unwrap_err().contains("--max-source-bytes"));
+        }
+
+        let mut cli = defaults();
+        cli.resume = true;
+        assert!(cli.validate().unwrap_err().contains("--resume"));
+
+        let mut cli = defaults();
+        cli.protocol = vec!["http".into()];
+        assert!(cli.validate().unwrap_err().contains("--protocol"));
+
+        let mut cli = defaults();
+        cli.protocol = vec!["VLESS".into(), "Shadowsocks".into()];
+        cli.country = vec!["DE".into(), "  ".into()];
+        assert!(cli.validate().unwrap_err().contains("--country"));
+    }
+
+    #[test]
+    fn accepts_lower_fetch_boundaries_and_supported_case_insensitive_protocols() {
+        let mut cli = defaults();
+        cli.fetch_retries = 0;
+        cli.max_source_bytes = 1024;
+        cli.lport = 1024;
+        cli.protocol = vec!["VLESS".into(), "Shadowsocks".into()];
+        cli.country = vec!["DE".into()];
+        assert!(cli.validate().is_ok());
+    }
+
+    #[test]
+    fn accepts_resume_when_checkpoint_path_is_supplied() {
+        let cli = Cli::try_parse_from([
+            "proxy-rs",
+            "--resume",
+            "--checkpoint",
+            "run.checkpoint.json",
+        ])
+        .unwrap();
+
+        assert!(cli.validate().is_ok());
+        assert_eq!(cli.checkpoint.as_deref(), Some("run.checkpoint.json"));
     }
 
     #[test]

@@ -14,6 +14,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      RUST_TEST_THREADS: 4
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -22,14 +24,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Build release
-        run: cargo build --workspace --release
+      - name: Build release (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: scripts\build.bat windows
+      - name: Build release (macOS/Linux)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: scripts/build.sh
       - name: Run unit tests
         run: cargo test --workspace
 
   coverage-and-mutation:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      RUST_TEST_THREADS: 4
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -38,7 +48,7 @@ jobs:
       - name: Install nightly coverage toolchain
         run: rustup toolchain install nightly-2026-10-26 --component llvm-tools-preview
       - name: Measure line and branch coverage
-        run: cargo +nightly-2026-10-26 llvm-cov --workspace --all-targets --branch --summary-only --fail-under-lines 97
+        run: cargo +nightly-2026-10-26 llvm-cov --workspace --lib --bins --tests --branch --summary-only --ignore-filename-regex '(.cargo/registry|/benches/)' --fail-under-lines 97
       - name: Install cargo-mutants
         run: cargo install --locked cargo-mutants
       - name: Run mutation tests

@@ -75,7 +75,7 @@ fn parse_cidr(cidr: &[u8]) -> Option<(&[u8], u32)> {
         match (field, key & 7) {
             (1, 2) => {
                 let len = read_varint(cidr, &mut pos)? as usize;
-                if pos + len > cidr.len() {
+                if len > cidr.len().saturating_sub(pos) {
                     return None;
                 }
                 ip = Some(&cidr[pos..pos + len]);
@@ -89,7 +89,7 @@ fn parse_cidr(cidr: &[u8]) -> Option<(&[u8], u32)> {
             }
             (_, 2) => {
                 let len = read_varint(cidr, &mut pos)? as usize;
-                if pos + len > cidr.len() {
+                if len > cidr.len().saturating_sub(pos) {
                     return None;
                 }
                 pos += len;
@@ -119,7 +119,7 @@ impl GeoDb {
                 bail!("geoip.dat: неожиданный protobuf-ключ {key}");
             }
             let len = read_varint(bytes, &mut pos).context("geoip.dat: битый varint")? as usize;
-            if pos + len > bytes.len() {
+            if len > bytes.len().saturating_sub(pos) {
                 bail!("geoip.dat: запись выходит за границу файла");
             }
             let payload = &bytes[pos..pos + len];
@@ -136,7 +136,7 @@ impl GeoDb {
                         let ilen = read_varint(payload, &mut cpos)
                             .context("geoip.dat: country_code")?
                             as usize;
-                        if cpos + ilen > payload.len() {
+                        if ilen > payload.len().saturating_sub(cpos) {
                             bail!("geoip.dat: country_code за границей");
                         }
                         country = String::from_utf8_lossy(&payload[cpos..cpos + ilen]).into_owned();
@@ -145,7 +145,7 @@ impl GeoDb {
                     (2, 2) => {
                         let ilen =
                             read_varint(payload, &mut cpos).context("geoip.dat: cidr")? as usize;
-                        if cpos + ilen > payload.len() {
+                        if ilen > payload.len().saturating_sub(cpos) {
                             bail!("geoip.dat: cidr за границей");
                         }
                         let cidr = &payload[cpos..cpos + ilen];
@@ -184,7 +184,7 @@ impl GeoDb {
                     (_, 2) => {
                         let ilen =
                             read_varint(payload, &mut cpos).context("geoip.dat: skip")? as usize;
-                        if cpos + ilen > payload.len() {
+                        if ilen > payload.len().saturating_sub(cpos) {
                             bail!("geoip.dat: skip за границей");
                         }
                         cpos += ilen;
@@ -704,6 +704,22 @@ mod tests {
         std::fs::remove_file(parent).unwrap();
     }
 
+    #[tokio::test]
+    async fn ensure_db_reports_local_connection_errors() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+
+        let error = ensure_db(
+            &temp_path("connection-error"),
+            &format!("http://{address}/geoip.dat"),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("не удалось скачать"));
+    }
+
     #[test]
     fn parse_builds_ipv4_ranges_for_partial_and_full_prefixes() {
         let bytes = database(&[
@@ -887,5 +903,40 @@ mod tests {
         };
         assert_eq!(db.iso_for(IpAddr::V4(Ipv4Addr::LOCALHOST)), None);
         assert_eq!(db.iso_for(IpAddr::V6(Ipv6Addr::LOCALHOST)), None);
+    }
+
+    #[test]
+    fn deterministic_malformed_protobuf_corpus_never_panics() {
+        // Valid length-delimited keys followed by u64::MAX encoded as their lengths.
+        for malformed in [
+            vec![
+                0x0a, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01,
+            ],
+            vec![
+                0x0a, 0x01, 0x0a, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01,
+            ],
+        ] {
+            assert!(std::panic::catch_unwind(|| GeoDb::parse(&malformed)).is_ok());
+        }
+
+        let mut state = 0x3c6e_f372_fe94_f82bu64;
+        for case in 0..2_000 {
+            let len = (next(&mut state) % 256) as usize;
+            let mut bytes = Vec::with_capacity(len);
+            for _ in 0..len {
+                bytes.push(next(&mut state) as u8);
+            }
+            assert!(
+                std::panic::catch_unwind(|| GeoDb::parse(&bytes)).is_ok(),
+                "case {case}"
+            );
+        }
+    }
+
+    fn next(state: &mut u64) -> u64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        *state
     }
 }

@@ -199,6 +199,33 @@ pub struct Checker {
     bad_outbounds: AtomicUsize,
 }
 
+struct BatchConfig(PathBuf);
+
+impl Drop for BatchConfig {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+struct ReporterTask(Option<tokio::task::JoinHandle<()>>);
+
+impl ReporterTask {
+    async fn stop(mut self) {
+        if let Some(task) = self.0.take() {
+            task.abort();
+            let _ = task.await;
+        }
+    }
+}
+
+impl Drop for ReporterTask {
+    fn drop(&mut self) {
+        if let Some(task) = self.0.take() {
+            task.abort();
+        }
+    }
+}
+
 async fn port_open(port: u16) -> bool {
     matches!(
         tokio::time::timeout(
@@ -354,13 +381,13 @@ impl Checker {
             let is_tty = std::io::stderr().is_terminal();
 
             // В не-TTY (CI) indicatif ничего не рисует — печатаем прогресс раз в минуту.
-            let reporter = spawn_progress_reporter(
+            let reporter = ReporterTask(spawn_progress_reporter(
                 pb.clone(),
                 Arc::clone(&all_good),
                 start,
                 is_tty,
                 Duration::from_secs(60),
-            );
+            ));
 
             let nested: Vec<Vec<Proxy>> = stream::iter(chunks)
                 .map(|chunk| {
@@ -398,9 +425,7 @@ impl Checker {
                 .collect()
                 .await;
             pb.finish_and_clear();
-            if let Some(h) = reporter {
-                h.abort();
-            }
+            reporter.stop().await;
             if !is_tty {
                 let good = all_good.lock().unwrap().len();
                 println!(
@@ -453,6 +478,7 @@ impl Checker {
 
             let config = this.build_config(&mapping);
             let cfg_path = this.work.join(format!("batch_{}.json", mapping[0].1));
+            let _config = BatchConfig(cfg_path.clone());
             let bytes = match serialize(&config) {
                 Ok(b) => b,
                 Err(e) => {
@@ -484,7 +510,6 @@ impl Checker {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("[ошибка] не удалось запустить ядро: {e}");
-                    let _ = std::fs::remove_file(&cfg_path);
                     pb.inc(total_items);
                     return Vec::new();
                 }
@@ -497,7 +522,6 @@ impl Checker {
                 match child.try_wait() {
                     Ok(Some(_)) => {
                         let text = read_output(child).await;
-                        let _ = std::fs::remove_file(&cfg_path);
                         return Checker::handle_failure(&this, &text, mapping, opts, pb.clone())
                             .await;
                     }
@@ -520,7 +544,6 @@ impl Checker {
             if !started {
                 let _ = child.kill().await;
                 let text = read_output(child).await;
-                let _ = std::fs::remove_file(&cfg_path);
                 return Checker::handle_failure(&this, &text, mapping, opts, pb.clone()).await;
             }
 
@@ -556,7 +579,6 @@ impl Checker {
                 .await;
 
             let _ = child.kill().await;
-            let _ = std::fs::remove_file(&cfg_path);
             results
         })
     }
@@ -570,7 +592,7 @@ impl Checker {
     ) -> Vec<Proxy> {
         eprintln!("[ошибка] try_wait: {error}");
         let _ = child.kill().await;
-        let _ = std::fs::remove_file(&cfg_path);
+        drop(BatchConfig(cfg_path));
         pb.inc(total_items);
         Vec::new()
     }
@@ -1232,6 +1254,87 @@ mod tests {
         assert_eq!(std::fs::read_dir(work).unwrap().count(), 0);
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelling_run_stage_kills_core_and_removes_config() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TestDir::new();
+        let work = dir.path("work");
+        std::fs::create_dir(&work).unwrap();
+        let pid_file = dir.path("core.pid");
+        let core = dir.path("long-running-core");
+        let script = format!(
+            "#!/bin/sh\necho $$ > '{}'\nexec /usr/bin/tail -f /dev/null\n",
+            pid_file.display()
+        );
+        std::fs::write(&core, script).unwrap();
+        let mut permissions = std::fs::metadata(&core).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&core, permissions).unwrap();
+
+        let checker = test_checker(core, work.clone(), Duration::from_secs(30));
+        let task = tokio::spawn(checker.run_stage(
+            vec![sample_proxy()],
+            speed_opts(),
+            ProgressBar::hidden(),
+        ));
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !pid_file.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("mock Xray process started");
+        let pid = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse::<u32>()
+            .unwrap();
+        task.abort();
+        let _ = task.await;
+
+        assert_eq!(std::fs::read_dir(&work).unwrap().count(), 0);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let alive = std::process::Command::new("kill")
+                    .arg("-0")
+                    .arg(pid.to_string())
+                    .output()
+                    .map(|output| output.status.success())
+                    .unwrap_or(false);
+                if !alive {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("dropped run_stage terminates its child process");
+    }
+
+    #[tokio::test]
+    async fn dropping_reporter_guard_aborts_its_task() {
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        struct DropFlag(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let flag = DropFlag(Arc::clone(&dropped));
+        let task = tokio::spawn(async move {
+            let _flag = flag;
+            std::future::pending::<()>().await;
+        });
+        tokio::task::yield_now().await;
+        let guard = ReporterTask(Some(task));
+        drop(guard);
+        tokio::task::yield_now().await;
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
     #[tokio::test]
     async fn checker_discards_reported_bad_outbound_and_counts_it() {
         let dir = TestDir::new();
@@ -1495,6 +1598,26 @@ mod tests {
         assert_eq!(config["outbounds"][0]["streamSettings"]["network"], "ws");
         assert_eq!(config["routing"]["rules"][0]["inboundTag"][0], "in_12001");
         assert_eq!(config["routing"]["rules"][0]["outboundTag"], "out_12001");
+    }
+
+    #[test]
+    fn build_config_omits_stream_settings_when_proxy_has_none() {
+        let checker = Checker {
+            core: PathBuf::new(),
+            work: PathBuf::new(),
+            speed_threads: 1,
+            start_timeout: Duration::from_secs(1),
+            base_port: 12000,
+            next: AtomicU16::new(12000),
+            bad_re: Regex::new("out_\\d+").unwrap(),
+            bad_outbounds: AtomicUsize::new(0),
+        };
+        let mut proxy = sample_proxy();
+        proxy.stream = None;
+
+        let config = checker.build_config(&[(proxy, 12001)]);
+
+        assert!(config["outbounds"][0].get("streamSettings").is_none());
     }
 
     #[tokio::test]

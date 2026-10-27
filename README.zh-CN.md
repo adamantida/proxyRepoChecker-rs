@@ -1,0 +1,153 @@
+<div align="center">
+
+# proxy-rs
+
+**收集、检测，只留下可用代理。**
+
+跨平台 Rust 命令行工具：从订阅和 GeoIP，到 TCP 检测、Xray 速度测试，再到可直接使用的 Clash/mihomo 配置。
+
+[![Cross-platform CI](https://img.shields.io/github/actions/workflow/status/adamantida/proxyRepoChecker-rs/cross-platform.yml?label=Cross-platform%20CI)](https://github.com/adamantida/proxyRepoChecker-rs/actions/workflows/cross-platform.yml)
+![Rust 2021](https://img.shields.io/badge/Rust-2021-orange)
+![Windows · macOS · Linux](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-64748b)
+
+[Русский](README.md) · [English](README.en.md) · [简体中文](README.zh-CN.md)
+
+</div>
+
+## 项目功能
+
+```mermaid
+flowchart LR
+    A[订阅与文件] --> B[下载]
+    B --> C[解析与去重]
+    C --> D[GeoIP 与命名]
+    D --> E[TCP 检测]
+    E --> F[Xray 速度测试]
+    F --> G[文本结果]
+    F --> H[Clash / mihomo]
+```
+
+- 解析 `vless`、`vmess`、`trojan` 和 `shadowsocks` 链接。
+- 支持本地文件、单个订阅 URL，以及 JSON 中定义的订阅集合。
+- 中间结果采用原子写入，可在每个阶段后查看。
+- 根据速度阈值筛选代理并生成 Clash/mihomo 配置。
+- 支持 Windows、macOS 和 Linux，并按当前系统及架构选择 Xray。
+
+## 快速开始
+
+安装 Rust stable 和 Cargo，然后在仓库根目录运行：
+
+```sh
+cargo build --workspace --release
+cargo run --release -- --set 3 -n 200 --shuffle
+```
+
+第二条命令使用较小的来源集合，并将检查数量限制为 200，适合快速试运行。查看所有 CLI 参数：
+
+```sh
+cargo run -- --help
+```
+
+### 构建脚本
+
+macOS/Linux 请在 Bash 中使用 `scripts/build.sh`；Windows 请在 `cmd.exe` 中使用 `scripts/build.bat`。默认构建当前平台，也可指定平台、架构或一次构建所有平台：
+
+```sh
+# macOS/Linux：当前平台、Linux ARM64，或为 x86_64 构建全部平台
+scripts/build.sh
+scripts/build.sh linux --arch aarch64 --install-target
+scripts/build.sh all --arch x86_64
+```
+
+```bat
+rem Windows cmd.exe：Windows x86_64，或为 ARM64 构建全部平台
+scripts\build.bat windows --arch x86_64 --install-target
+scripts\build.bat all --arch aarch64 --install-target
+```
+
+`--install-target` 只通过 rustup 安装 Rust target。交叉编译还需要匹配的 linker 和系统 SDK：Windows GNU 需要兼容的 MinGW linker，Windows ARM64 需要 MSVC 工具链，macOS 构建需要 Apple SDK/toolchain。脚本不会自动安装这些系统工具；非本机目标可能需要配置 Cargo linker。本机二进制位于 `target/release/`，交叉编译产物位于 `target/<rust-target>/release/`。
+
+### 安全下载与断点续跑
+
+默认验证订阅的 TLS 证书。每个响应默认最多 16 MiB，临时错误会延迟重试两次。`.proxy_cache` 使用 `ETag`/`Last-Modified`，并可在临时网络错误时回退到上次成功的响应；使用 `--fetch-cache-dir DIR` 更改目录，或用 `--no-fetch-cache` 关闭缓存。`--insecure-source-tls` 会关闭证书验证，只应在明确接受风险时使用。
+
+```sh
+proxy-rs --url 'https://example.org/sub' --fetch-retries 4 --max-source-bytes 33554432 \
+  --source-report source-quality.json --checkpoint run.checkpoint
+# 中断或失败后从已保存阶段继续：
+proxy-rs --resume --checkpoint run.checkpoint
+```
+
+`--resume` 必须同时指定 `--checkpoint FILE`。JSON 来源报告包含每个来源的状态及计数（已获取、有效、重复、TCP 可达、速度达标）；URL 中的凭据、查询参数、fragment 和路径会被隐藏。Checkpoint 保存续跑所需的链接和结果，请将文件保存在私密位置。
+
+### 筛选与 JSON 输出
+
+`--protocol` 和 `--country` 可保留指定协议及国家（ISO 代码或 GeoIP 标签）；同一参数可重复使用，也可用逗号分隔多个值。`--only-new` 会解析现有 `--output` 文件中的 outbound key，并移除 key 已存在的代理。`--json-output FILE` 还会将最终存活代理写成 JSON 数组，只包含摘要字段：`protocol`、`server`、`port`、`name`、`country`、`display`、`ping_ms` 和 `speed_kbs`；不包含代理 URI、密码、UUID 或连接设置。
+
+```sh
+cargo run --release -- --url 'https://example.org/sub' \
+  --protocol vless,vmess --country US,DE --only-new \
+  --json-output new-proxies.json
+```
+
+## 输出结果
+
+| 文件 | 内容 |
+|---|---|
+| `raw.txt` | 从订阅下载的原始文本 |
+| `parsed.txt` | 去重后的代理链接；GeoIP 阶段后会带显示名称 |
+| `alive.txt` | 通过已启用检查的最终代理；若同时关闭 TCP 和速度检查，候选节点尚未经过连通性验证 |
+| `good.txt` | 达到 `--min-kb` 速度阈值的代理 |
+| `dead.txt` | 被 TCP、延迟上限或速度检查淘汰的代理；需指定 `--dead` |
+| `clash.yaml` | 指定 `--clash` 且存在符合条件的代理时生成的配置 |
+
+可通过 CLI 参数修改输出路径。生成结果和本地日志已从 Git 跟踪中排除。
+
+## 文档
+
+- [Полное руководство на русском](docs/ru/README.md)
+- [Full documentation in English](docs/en/README.md)
+- [简体中文完整文档](docs/zh-CN/README.md)
+- [История изменений и релизов / Changelog / 更新日志](CHANGELOG.md)
+
+完整手册包含全部 CLI 参数、输入数据、处理流程、输出格式、Xray、GeoIP、Clash/mihomo、项目结构、测试和 CI。
+
+## 开发
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo build --workspace --release
+cargo bench --bench pipeline
+```
+
+Workspace 测试还会运行确定性的 fuzz-style 测试语料，覆盖损坏的代理 URI 和 GeoIP protobuf 数据。这是带固定随机种子的回归测试，不是独立的覆盖引导 fuzzing runtime。
+
+GitHub Actions 会在 Ubuntu、macOS 和 Windows 上运行检查。另有 Ubuntu job 用于覆盖率统计和 mutation testing。
+
+## 发布版本
+
+推送与 `Cargo.toml` 版本号一致的 `vX.Y.Z` 标签后，GitHub Actions 会为 Linux、macOS 和 Windows 构建压缩包，附加 SHA-256 校验和，并创建包含三种语言文档的 **Release 草稿**，供发布前检查和编辑。
+
+## 已发布结果
+
+- [Clash/mihomo 配置](https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/clash.yaml)
+- [高速代理列表](https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/good.txt)
+
+发布 workflow 每小时更新这些文件，也可在 GitHub Actions 中手动运行。
+
+## uSphere VPN
+
+想找一款适合日常使用的 VPN 服务？欢迎了解 **uSphere VPN**。这是一项付费服务，项目维护者认可其服务品质。请前往 Telegram 机器人查看服务条款并选择适合自己的方案：
+
+[前往 Telegram 了解 uSphere VPN →](https://t.me/uSphereVPN_bot)
+
+## 联系方式与项目支持
+
+- Telegram：`[填写联系方式]`
+- 邮箱：`[填写邮箱地址]`
+- BTC：`[填写钱包地址]`
+- USDT：`[填写钱包地址和网络]`
+
+捐赠完全自愿，用于支持和维护 `proxy-rs` 项目。使用本项目无需付费。

@@ -941,6 +941,45 @@ mod tests {
     }
 
     #[test]
+    fn parse_vmess_and_legacy_ss_report_malformed_payload_shapes() {
+        assert_eq!(
+            invalid_reason(parse_link(&format!("vmess://{}", STANDARD.encode("{{")))),
+            "bad vmess json"
+        );
+        assert_eq!(
+            invalid_reason(parse_link(&format!("vmess://{}", STANDARD.encode("[]")))),
+            "vmess not object"
+        );
+
+        for (payload, expected) in [
+            ("cipher-only@host:443", "ss format"),
+            ("cipher:password@host", "ss format"),
+            ("cipher:password@", "ss format"),
+        ] {
+            let link = format!("ss://{}", STANDARD.encode(payload));
+            assert_eq!(invalid_reason(parse_link(&link)), expected, "{payload}");
+        }
+    }
+
+    #[test]
+    fn parse_vmess_reports_unsupported_transport_in_uri_and_json_forms() {
+        assert_eq!(
+            unsupported_proto(parse_link(&format!(
+                "vmess://{UUID}@node.example?type=quic"
+            ))),
+            "vmess transport"
+        );
+
+        let link = vmess_json_link(json!({
+            "id": UUID,
+            "add": "node.example",
+            "port": 443,
+            "net": "quic"
+        }));
+        assert_eq!(unsupported_proto(parse_link(&link)), "vmess transport");
+    }
+
+    #[test]
     fn parse_link_classifies_protocols_case_insensitively() {
         for (link, expected) in [
             ("ssr://anything", "ssr"),
@@ -1010,5 +1049,66 @@ mod tests {
             unsupported_proto(Err(ParseErr::Invalid("unexpected")))
         })
         .is_err());
+    }
+
+    #[test]
+    fn deterministic_malformed_uri_corpus_never_panics() {
+        let mut state = 0x6a09_e667_f3bc_c909u64;
+        for case in 0..2_000 {
+            let len = (next(&mut state) % 192) as usize;
+            let mut input = String::with_capacity(len + 10);
+            input.push_str(match case % 4 {
+                0 => "vless://",
+                1 => "vmess://",
+                2 => "trojan://",
+                _ => "ss://",
+            });
+            for _ in 0..len {
+                input.push(char::from(next(&mut state) as u8));
+            }
+            assert!(
+                std::panic::catch_unwind(|| parse_link(&input)).is_ok(),
+                "case {case}"
+            );
+        }
+    }
+
+    #[test]
+    fn deterministic_uri_mutations_keep_parse_and_dedup_accounting_consistent() {
+        let base = format!("vless://{UUID}@example.org:443?type=tcp#seed");
+        let mut state = 0xbb67_ae85_84ca_a73bu64;
+        let mut links = Vec::with_capacity(514);
+        for case in 0..512 {
+            let mut candidate = base.clone();
+            let position = (next(&mut state) as usize) % candidate.len();
+            candidate.replace_range(
+                position..position + 1,
+                &char::from(next(&mut state) as u8).to_string(),
+            );
+            if case % 7 == 0 {
+                candidate.push_str("%GG");
+            }
+            links.push(candidate);
+        }
+        links.extend([base.clone(), base]);
+
+        let total = links.len();
+        let (proxies, stats) = parse_all(links);
+        assert_eq!(stats.links, total);
+        assert_eq!(
+            stats.parsed
+                + stats.duplicates
+                + stats.invalid
+                + stats.unsupported.values().sum::<usize>(),
+            total
+        );
+        assert_eq!(proxies.len(), stats.parsed);
+    }
+
+    fn next(state: &mut u64) -> u64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        *state
     }
 }

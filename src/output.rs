@@ -29,6 +29,27 @@ pub fn write_text_atomic(path: &str, text: &str) -> Result<()> {
     write_bytes_atomic(Path::new(path), text.as_bytes(), None)
 }
 
+/// Write a credential-free JSON view of proxy results for automation.
+pub fn write_proxy_json(path: &str, proxies: &[Proxy]) -> Result<()> {
+    let rows = proxies
+        .iter()
+        .map(|proxy| {
+            serde_json::json!({
+                "protocol": proxy.proto,
+                "server": proxy.host,
+                "port": proxy.port,
+                "name": proxy.name,
+                "country": proxy.country,
+                "display": proxy.display,
+                "ping_ms": proxy.ping,
+                "speed_kbs": proxy.speed_kbs,
+            })
+        })
+        .collect::<Vec<_>>();
+    let json = serde_json::to_string_pretty(&rows)?;
+    write_text_atomic(path, &json)
+}
+
 pub fn write_bytes_atomic(path: &Path, bytes: &[u8], unix_mode: Option<u32>) -> Result<()> {
     write_bytes_atomic_checked(path, bytes, unix_mode, |_| Ok(()))
 }
@@ -244,6 +265,44 @@ mod tests {
     }
 
     #[test]
+    fn proxy_json_reports_results_without_uri_credentials() {
+        let dir = TestDir::new();
+        let path = dir.path("report.json");
+        let mut item = proxy();
+        item.orig_url = "vless://private-password@proxy.example:443?token=secret".into();
+        item.settings = serde_json::json!({"password": "private-password", "id": "private-id"});
+        item.ping = Some(24);
+        item.speed_kbs = 1024.5;
+
+        write_proxy_json(path.to_str().unwrap(), &[item]).unwrap();
+
+        let json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(json[0]["protocol"], "vless");
+        assert_eq!(json[0]["ping_ms"], 24);
+        assert_eq!(json[0]["speed_kbs"], 1024.5);
+        let text = json.to_string();
+        assert!(!text.contains("private-password"));
+        assert!(!text.contains("private-id"));
+        assert!(!text.contains("secret"));
+    }
+
+    #[test]
+    fn proxy_json_handles_empty_results_and_missing_ping() {
+        let dir = TestDir::new();
+        let path = dir.path("empty.json");
+        write_proxy_json(path.to_str().unwrap(), &[]).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[]");
+
+        let path = dir.path("without-ping.json");
+        write_proxy_json(path.to_str().unwrap(), &[proxy()]).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert!(value[0]["ping_ms"].is_null());
+        assert_eq!(value[0]["speed_kbs"], 0.0);
+    }
+
+    #[test]
     fn top_lines_formats_empty_input_and_both_speed_modes() {
         assert_eq!(top_lines(&[], false), ["   (пусто)"]);
 
@@ -312,6 +371,36 @@ mod tests {
         assert!(err.is_err());
         assert_eq!(std::fs::read_to_string(path).unwrap(), "keep me");
         assert!(dir.temp_files().is_empty());
+    }
+
+    #[test]
+    fn atomic_writer_skips_existing_temporary_names() {
+        let dir = TestDir::new();
+        let path = dir.path("collision.txt");
+        let first_id = TEMP_ID.load(Ordering::Relaxed);
+        for id in first_id..first_id + 32 {
+            let collision = dir.path(&format!(
+                ".collision.txt.{}.{}.tmp.txt",
+                std::process::id(),
+                id
+            ));
+            std::fs::write(collision, b"reserved temporary name").unwrap();
+        }
+
+        write_bytes_atomic(&path, b"new contents", None).unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"new contents");
+        for id in first_id..first_id + 32 {
+            let collision = dir.path(&format!(
+                ".collision.txt.{}.{}.tmp.txt",
+                std::process::id(),
+                id
+            ));
+            assert_eq!(
+                std::fs::read(collision).unwrap(),
+                b"reserved temporary name"
+            );
+        }
     }
 
     #[test]

@@ -272,4 +272,19 @@ mod tests {
         first_accept.await.unwrap();
         second_accept.await.unwrap();
     }
+
+    #[tokio::test]
+    async fn probe_returns_none_for_a_cached_negative_host_lookup() {
+        let mut sample = proxy(443);
+        sample.host = "cached-negative.example".into();
+        let cache = Arc::new(tokio::sync::Mutex::new(HashMap::from([(
+            sample.host.clone(),
+            Vec::new(),
+        )])));
+
+        assert_eq!(
+            probe(&sample, Duration::from_secs(1), 1, 0, &cache).await,
+            None
+        );
+    }
 }
