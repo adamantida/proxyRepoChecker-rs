@@ -301,6 +301,25 @@ mod tests {
     }
 
     #[test]
+    fn pretty_json_breaks_equal_url_and_status_ties_by_counts() {
+        let mut report = SourceQualityReport::new();
+        let larger = report.add_source("https://feed.example/first");
+        larger.status = SourceStatus::Fetched;
+        larger.counts.valid = 9;
+        let smaller = report.add_source("https://feed.example/second");
+        smaller.status = SourceStatus::Fetched;
+        smaller.counts.valid = 2;
+
+        let pretty = report.to_pretty_json().unwrap();
+        let value: serde_json::Value = serde_json::from_str(&pretty).unwrap();
+        let rows = value["sources"].as_array().unwrap();
+
+        assert_eq!(rows[0]["counts"]["valid"], 2);
+        assert_eq!(rows[1]["counts"]["valid"], 9);
+        assert_eq!(report.sources[0].counts.valid, 9);
+    }
+
+    #[test]
     fn empty_report_serializes_to_stable_empty_collection() {
         let report = SourceQualityReport::new();
         assert_eq!(report.to_json().unwrap(), r#"{"sources":[]}"#);

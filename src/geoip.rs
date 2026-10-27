@@ -1,5 +1,6 @@
 use crate::parse::Proxy;
 use anyhow::{bail, Context, Result};
+use colored::Colorize;
 use futures::stream::{self, StreamExt};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -247,7 +248,12 @@ pub async fn ensure_db(path: &Path, url: &str) -> Result<()> {
             }
         }
     }
-    println!(">> GeoIP: качаю geoip.dat -> {}", path.display());
+    println!(
+        "  {} {} → {}",
+        "↓".cyan().bold(),
+        "Загружаю базу GeoIP".cyan(),
+        path.display().to_string().white()
+    );
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)
@@ -367,7 +373,7 @@ pub async fn assign_countries(proxies: &mut [Proxy], db: &GeoDb) -> Result<HashM
 
 pub fn print_country_summary(counts: &HashMap<String, usize>) {
     if let Some(line) = country_summary_line(counts) {
-        println!("{line}");
+        println!("  {}", line.cyan());
     }
 }
 
@@ -383,7 +389,7 @@ fn country_summary_line(counts: &HashMap<String, usize>) -> Option<String> {
         .map(|(k, v)| format!("{k}: {v}"))
         .collect();
     Some(format!(
-        ">> GeoIP: стран: {}, топ: {}",
+        "Стран в результатах: {}, распределение: {}",
         counts.len(),
         shown.join(", ")
     ))
@@ -889,7 +895,7 @@ mod tests {
         let line = country_summary_line(&counts).unwrap();
         assert_eq!(
             line,
-            ">> GeoIP: стран: 13, топ: C13: 13, C12: 12, C11: 11, C10: 10, C09: 9, C08: 8, C07: 7, C06: 6, C05: 5, C04: 4, C03: 3, C02: 2"
+            "Стран в результатах: 13, распределение: C13: 13, C12: 12, C11: 11, C10: 10, C09: 9, C08: 8, C07: 7, C06: 6, C05: 5, C04: 4, C03: 3, C02: 2"
         );
         print_country_summary(&counts);
     }

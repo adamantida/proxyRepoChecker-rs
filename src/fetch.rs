@@ -685,6 +685,40 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
+    #[tokio::test]
+    async fn cache_read_error_does_not_prevent_fetching_source() {
+        let directory = std::env::temp_dir().join(format!(
+            "proxy-rs-fetch-cache-read-error-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let (url, server) =
+            serve_capture(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+        // A directory at the cache-file path passes metadata but fails read_to_end.
+        std::fs::create_dir(cache_path(&directory, &url)).unwrap();
+
+        let result = fetch_one_with_options(
+            &reqwest::Client::new(),
+            &url,
+            &FetchOptions {
+                retries: 0,
+                cache_dir: Some(directory.clone()),
+                ..FetchOptions::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.text, "ok");
+        assert!(server.join().unwrap().starts_with("GET /test "));
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn invalid_cache_validator_headers_are_ignored() {
         assert!(valid_header_value("\"safe-etag\"").is_some());
@@ -804,6 +838,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fetch_one_reports_request_timeouts() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            thread::sleep(Duration::from_millis(100));
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+        });
+
+        let error = fetch_one_with_options(
+            &reqwest::Client::new(),
+            &format!("http://{address}/slow"),
+            &FetchOptions {
+                timeout: Duration::from_millis(20),
+                retries: 0,
+                ..FetchOptions::default()
+            },
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        server.join().unwrap();
+        assert_eq!(error.attempts, 1);
+        assert_eq!(error.message, "истекло время ожидания источника");
+    }
+
+    #[tokio::test]
     async fn fetch_one_reports_http_status_errors() {
         let url = serve_once(
             b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -897,6 +960,77 @@ mod tests {
         assert_eq!(result.text, "ok");
         assert!(!request.contains("if-none-match:"));
         assert!(!request.contains("if-modified-since:"));
+    }
+
+    #[tokio::test]
+    async fn retryable_status_reuses_valid_cache_validators_on_each_attempt() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let mut requests = Vec::new();
+            for response in [
+                b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".as_slice(),
+                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok".as_slice(),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0_u8; 4096];
+                let count = stream.read(&mut request).unwrap_or(0);
+                requests.push(String::from_utf8_lossy(&request[..count]).into_owned());
+                let _ = stream.write_all(response);
+                let _ = stream.shutdown(Shutdown::Both);
+            }
+            requests
+        });
+        let url = format!("http://{address}/test");
+        let result = fetch_one_with_options(
+            &reqwest::Client::new(),
+            &url,
+            &FetchOptions {
+                retries: 1,
+                timeout: Duration::from_secs(2),
+                ..FetchOptions::default()
+            },
+            Some(CachedSubscription {
+                format_version: CACHE_FORMAT_VERSION,
+                body: "cached".into(),
+                etag: Some("\"etag-v1\"".into()),
+                last_modified: Some("Wed, 21 Oct 2015 07:28:00 GMT".into()),
+            }),
+        )
+        .await
+        .unwrap();
+        let requests = server.join().unwrap();
+
+        assert_eq!(result.text, "ok");
+        assert_eq!(requests.len(), 2);
+        for request in requests {
+            let request = request.to_ascii_lowercase();
+            assert!(request.contains("if-none-match: \"etag-v1\""));
+            assert!(request.contains("if-modified-since: wed, 21 oct 2015 07:28:00 gmt"));
+        }
+    }
+
+    #[tokio::test]
+    async fn truncated_response_body_is_retried_and_followed_by_success() {
+        let url = serve_sequence(vec![
+            b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\nConnection: close\r\n\r\nshort",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+        ]);
+
+        let result = fetch_one_with_options(
+            &reqwest::Client::new(),
+            &url,
+            &FetchOptions {
+                retries: 1,
+                timeout: Duration::from_secs(2),
+                ..FetchOptions::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.text, "ok");
     }
 
     #[tokio::test]
@@ -1028,6 +1162,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn accepts_response_whose_body_exactly_matches_the_limit() {
+        let url =
+            serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\n12345");
+        let result = fetch_one_with_options(
+            &reqwest::Client::new(),
+            &url,
+            &FetchOptions {
+                max_response_bytes: 5,
+                retries: 0,
+                ..FetchOptions::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.text, "12345");
+    }
+
+    #[tokio::test]
+    async fn cached_body_over_the_limit_is_ignored_before_a_not_modified_response() {
+        let url = serve_once(b"HTTP/1.1 304 Not Modified\r\nConnection: close\r\n\r\n");
+        let error = fetch_one_with_options(
+            &reqwest::Client::new(),
+            &url,
+            &FetchOptions {
+                max_response_bytes: 4,
+                retries: 0,
+                ..FetchOptions::default()
+            },
+            Some(CachedSubscription {
+                format_version: CACHE_FORMAT_VERSION,
+                body: "12345".into(),
+                etag: Some("\"too-large\"".into()),
+                last_modified: None,
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.attempts, 1);
+        assert_eq!(error.message, "HTTP 304 без сохранённого ответа");
+    }
+
+    #[tokio::test]
     async fn uses_conditional_cache_and_falls_back_to_stale_data() {
         let directory = std::env::temp_dir().join(format!(
             "proxy-rs-fetch-cache-{}-{}",
@@ -1120,7 +1299,7 @@ mod tests {
                 .as_nanos()
         ));
         let url = serve_once(
-            b"HTTP/1.1 200 OK\r\nContent-Length: 14\r\nETag: \"v2\"\r\nConnection: close\r\n\r\nvless://cached",
+            b"HTTP/1.1 200 OK\r\nContent-Length: 14\r\nETag: \"v2\"\r\nLast-Modified: Wed, 21 Oct 2015 07:28:00 GMT\r\nConnection: close\r\n\r\nvless://cached",
         );
         let result = fetch_one_with_options(
             &reqwest::Client::new(),
@@ -1138,6 +1317,10 @@ mod tests {
         let cache = read_cache(&path, FetchOptions::default().max_response_bytes).unwrap();
         assert_eq!(cache.body, "vless://cached");
         assert_eq!(cache.etag.as_deref(), Some("\"v2\""));
+        assert_eq!(
+            cache.last_modified.as_deref(),
+            Some("Wed, 21 Oct 2015 07:28:00 GMT")
+        );
         assert_eq!(result.text, "vless://cached");
         #[cfg(unix)]
         {

@@ -278,7 +278,7 @@ fn binary_entrypoint_uses_a_local_geoip_database_and_renames_the_proxy() {
     let alive = fs::read_to_string(temp.path("alive.txt")).unwrap();
     assert!(alive.contains("[US]"), "{alive}");
     assert!(String::from_utf8_lossy(&output.stdout)
-        .contains("GeoIP: база: 1 стран, 1 IPv4-сетей, 0 IPv6-сетей"));
+        .contains("Стран в результатах: 1, распределение: US: 1"));
 }
 
 #[cfg(unix)]
@@ -343,7 +343,7 @@ fn binary_entrypoint_runs_speed_good_statistics_and_clash_with_local_fixtures() 
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("прошли порог 1/1"), "{stdout}");
+    assert!(stdout.contains("прошли порог: 1/1"), "{stdout}");
     assert!(
         stdout.contains("средняя:") && stdout.contains("медиана:"),
         "{stdout}"

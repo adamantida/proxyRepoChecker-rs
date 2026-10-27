@@ -616,6 +616,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn measure_rejects_a_self_signed_tls_certificate_through_socks5() {
+        use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
+        use std::sync::Arc;
+        use tokio::io::AsyncReadExt;
+        use tokio_rustls::TlsAcceptor;
+
+        let certificate = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+            certificate.key_pair.serialize_der(),
+        ));
+        let config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![certificate.cert.der().clone()], key)
+            .unwrap();
+        let acceptor = TlsAcceptor::from(Arc::new(config));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let tls_port = listener.local_addr().unwrap().port();
+        let tls_server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            if let Ok(mut stream) = acceptor.accept(stream).await {
+                let mut request = [0; 1024];
+                let _ = stream.read(&mut request).await;
+            }
+        });
+        let (socks_port, socks_server) = socks5_once().await;
+        let url = format!("https://localhost:{tls_port}/speed");
+
+        let speed = measure(socks_port, Some(&url), 1.0, 2.0, 0.5).await;
+
+        tls_server.await.unwrap();
+        socks_server.await.unwrap();
+        assert_eq!(speed, 0.0);
+    }
+
+    #[tokio::test]
     async fn measure_returns_zero_for_an_unavailable_local_socks_proxy() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();

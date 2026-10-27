@@ -58,7 +58,7 @@ fn link_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r#"(?i)\b(?:vless|vmess|trojan|ss|ssr|hysteria2|hy2|tuic|anytls|socks5?|mierus|wireguard|wg)://[^\s"'<>\\]+"#,
+            r#"(?i)\b(?:vless|vmess|trojan|ss|ssr|hysteria2|hysteria|hy2|tuic|anytls|socks5?|mierus|wireguard|wg)://[^\s"'<>\\]+"#,
         )
         .unwrap()
     })
@@ -630,6 +630,41 @@ mod tests {
     }
 
     #[test]
+    fn extract_links_recognizes_extractor_schemes_and_handles_unmatched_wrappers() {
+        let text = concat!(
+            "ssr://payload ",
+            "hysteria2://payload ",
+            "hy2://payload ",
+            "hysteria://payload ",
+            "tuic://payload ",
+            "anytls://payload ",
+            "socks://payload ",
+            "socks5://payload ",
+            "mierus://payload ",
+            "wireguard://payload ",
+            "wg://payload ",
+            "(vless://node.example/path]",
+        );
+        assert_eq!(
+            extract_links(text),
+            [
+                "ssr://payload",
+                "hysteria2://payload",
+                "hy2://payload",
+                "hysteria://payload",
+                "tuic://payload",
+                "anytls://payload",
+                "socks://payload",
+                "socks5://payload",
+                "mierus://payload",
+                "wireguard://payload",
+                "wg://payload",
+                "vless://node.example/path",
+            ]
+        );
+    }
+
+    #[test]
     fn parse_vless_decodes_name_and_applies_defaults() {
         let link = format!("vless://{UUID}@example.com#%20Node%20");
         let proxy = parse_link(&link).unwrap();
@@ -707,6 +742,23 @@ mod tests {
             let proxy = parse_link(&format!("vless://{UUID}@example.com?type={alias}")).unwrap();
             assert_eq!(proxy.stream.unwrap()["network"], expected);
         }
+    }
+
+    #[test]
+    fn parse_vless_validates_id_characters_ports_and_decodes_lossy_fragments() {
+        for id in ["a".repeat(15), format!("{}!", "a".repeat(16))] {
+            assert_eq!(
+                invalid_reason(parse_link(&format!("vless://{id}@example.com"))),
+                "bad uuid"
+            );
+        }
+        assert_eq!(
+            invalid_reason(parse_link(&format!("vless://{UUID}@example.com:0"))),
+            "bad host/port"
+        );
+
+        let proxy = parse_link(&format!("vless://{UUID}@example.com#A%FF%20B")).unwrap();
+        assert_eq!(proxy.name, "A� B");
     }
 
     #[test]
@@ -792,6 +844,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_vmess_json_rejects_missing_or_invalid_addresses_and_ports() {
+        for value in [
+            json!({"id": UUID, "add": "", "port": 443}),
+            json!({"id": UUID, "add": "node.example", "port": 0}),
+            json!({"id": UUID, "add": "node.example", "port": "not-a-port"}),
+        ] {
+            assert_eq!(
+                invalid_reason(parse_link(&vmess_json_link(value))),
+                "bad address"
+            );
+        }
+    }
+
+    #[test]
     fn parse_trojan_supports_peer_alias_and_defaults() {
         let proxy =
             parse_link("trojan://secret@example.org?peer=sni.example#%20secure%20").unwrap();
@@ -870,6 +936,30 @@ mod tests {
         let encoded = parse_link(&format!("ss://{userinfo}@encoded.example:8388")).unwrap();
         assert_eq!(encoded.host, "encoded.example");
         assert_eq!(encoded.settings["password"], "encoded");
+    }
+
+    #[test]
+    fn parse_ss_rejects_malformed_userinfo_and_legacy_address_fields() {
+        for (link, expected) in [
+            ("ss://not-base64!@example.org:8388", "bad ss userinfo"),
+            ("ss://YWJj@example.org:8388", "ss format"),
+            (
+                "ss://YWVzLTI1Ni1nY206cGFzcw==@example.org",
+                "bad ss address",
+            ),
+            ("ss://", "bad ss base64"),
+        ] {
+            assert_eq!(invalid_reason(parse_link(link)), expected, "{link}");
+        }
+
+        for payload in ["aes-128-gcm:pass@host:0", "aes-128-gcm:pass@host:nope"] {
+            let link = format!("ss://{}", STANDARD.encode(payload));
+            assert_eq!(
+                invalid_reason(parse_link(&link)),
+                "bad ss address",
+                "{payload}"
+            );
+        }
     }
 
     #[test]
@@ -1026,6 +1116,31 @@ mod tests {
     }
 
     #[test]
+    fn parse_all_deduplicates_only_equal_outbound_settings_and_streams() {
+        let same_outbound_different_fragment = format!("vless://{UUID}@example.com#renamed");
+        let different_transport = format!("vless://{UUID}@example.com?type=ws#ws");
+        let different_port = format!("vless://{UUID}@example.com:8443#port");
+        let input = vec![
+            format!("vless://{UUID}@example.com#first"),
+            same_outbound_different_fragment,
+            different_transport,
+            different_port,
+            format!("vless://{UUID}@example.com#again"),
+        ];
+
+        let (proxies, stats) = parse_all(input);
+        assert_eq!(proxies.len(), 3);
+        assert_eq!(proxies[0].name, "first");
+        assert_eq!(proxies[1].stream.as_ref().unwrap()["network"], "ws");
+        assert_eq!(proxies[2].settings["port"], 8443);
+        assert_eq!(stats.links, 5);
+        assert_eq!(stats.parsed, 3);
+        assert_eq!(stats.duplicates, 2);
+        assert_eq!(stats.invalid, 0);
+        assert!(stats.unsupported.is_empty());
+    }
+
+    #[test]
     fn parse_all_empty_input_has_zeroed_stats() {
         let (proxies, stats) = parse_all(Vec::new());
         assert!(proxies.is_empty());
@@ -1094,6 +1209,74 @@ mod tests {
 
         let total = links.len();
         let (proxies, stats) = parse_all(links);
+        assert_eq!(stats.links, total);
+        assert_eq!(
+            stats.parsed
+                + stats.duplicates
+                + stats.invalid
+                + stats.unsupported.values().sum::<usize>(),
+            total
+        );
+        assert_eq!(proxies.len(), stats.parsed);
+    }
+
+    #[test]
+    fn deterministic_property_like_inputs_never_panic_during_extraction_or_parsing() {
+        let atoms = [
+            "vless://",
+            "VMESS://",
+            "trojan://",
+            "ss://",
+            "@",
+            ":0",
+            "%",
+            "%GG",
+            "#",
+            "?type=",
+            "&amp;",
+            "\u{200b}",
+            "\u{feff}",
+            "\u{fffd}",
+            "[::1]",
+            "\\",
+            "\"",
+            "'",
+            "<",
+            ">",
+            "(",
+            ")",
+            "]",
+            "|",
+            "\n",
+            "\r",
+            "\t",
+            "💥",
+        ];
+        let mut state = 0x3c6e_f372_fe94_f82bu64;
+        let mut corpus = Vec::new();
+        for case in 0..512 {
+            let mut value = String::new();
+            for _ in 0..(next(&mut state) % 12 + 1) {
+                value.push_str(atoms[(next(&mut state) as usize) % atoms.len()]);
+            }
+            if case % 2 == 0 {
+                value.insert_str(0, "vless://");
+            } else if case % 3 == 0 {
+                value.insert_str(0, "ss://");
+            }
+            assert!(
+                std::panic::catch_unwind(|| extract_links(&value)).is_ok(),
+                "extract case {case}: {value:?}"
+            );
+            assert!(
+                std::panic::catch_unwind(|| parse_link(&value)).is_ok(),
+                "parse case {case}: {value:?}"
+            );
+            corpus.push(value);
+        }
+
+        let total = corpus.len();
+        let (proxies, stats) = parse_all(corpus);
         assert_eq!(stats.links, total);
         assert_eq!(
             stats.parsed

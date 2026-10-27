@@ -303,6 +303,18 @@ mod tests {
     }
 
     #[test]
+    fn proxy_json_propagates_atomic_write_failure() {
+        let dir = TestDir::new();
+        let path = dir.path("missing-parent/report.json");
+
+        let error = write_proxy_json(path.to_str().unwrap(), &[proxy()]).unwrap_err();
+
+        assert!(error.to_string().contains("не удалось создать"));
+        assert!(!path.exists());
+        assert!(!dir.path("missing-parent").exists());
+    }
+
+    #[test]
     fn top_lines_formats_empty_input_and_both_speed_modes() {
         assert_eq!(top_lines(&[], false), ["   (пусто)"]);
 
@@ -325,6 +337,21 @@ mod tests {
                 .split_whitespace()
                 .collect::<Vec<_>>(),
             ["-", "-", "-", "vless", "proxy.example:443"]
+        );
+    }
+
+    #[test]
+    fn top_lines_formats_header_and_missing_ping_without_speed() {
+        let item = proxy();
+        let lines = top_lines(&[item], false);
+
+        assert_eq!(
+            lines[0],
+            "     ping      speed  имя            протокол     адрес"
+        );
+        assert_eq!(
+            lines[1],
+            "        -          -  [DE] - 001     vless        proxy.example:443"
         );
     }
 
@@ -414,6 +441,37 @@ mod tests {
     }
 
     #[test]
+    fn writer_reports_temporary_name_exhaustion_without_overwriting_collisions() {
+        let dir = TestDir::new();
+        let path = dir.path("exhausted.txt");
+        let first_id = TEMP_ID.load(Ordering::Relaxed);
+        const RESERVED_NAMES: u64 = 1_000;
+        for id in first_id..first_id + RESERVED_NAMES {
+            let collision = dir.path(&format!(
+                ".exhausted.txt.{}.{}.tmp.txt",
+                std::process::id(),
+                id
+            ));
+            std::fs::write(collision, b"reserved").unwrap();
+        }
+
+        let error = write_bytes_atomic(&path, b"data", None).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("не удалось подобрать уникальное имя временного файла"));
+        assert!(!path.exists());
+        for id in first_id..first_id + RESERVED_NAMES {
+            let collision = dir.path(&format!(
+                ".exhausted.txt.{}.{}.tmp.txt",
+                std::process::id(),
+                id
+            ));
+            assert_eq!(std::fs::read(collision).unwrap(), b"reserved");
+        }
+    }
+
+    #[test]
     fn writer_cleans_up_temp_file_when_destination_cannot_be_replaced() {
         let dir = TestDir::new();
         let destination = dir.path("destination");
@@ -445,6 +503,18 @@ mod tests {
         assert!(err
             .to_string()
             .contains("путь назначения не содержит имени файла"));
+    }
+
+    #[test]
+    fn writer_accepts_a_relative_destination_without_an_explicit_parent() {
+        let id = TEST_ID.fetch_add(1, Ordering::Relaxed);
+        let name = format!(".proxy-rs-relative-output-{}-{id}.txt", std::process::id());
+        let path = Path::new(&name);
+
+        write_bytes_atomic(path, b"relative output", None).unwrap();
+
+        assert_eq!(std::fs::read(path).unwrap(), b"relative output");
+        std::fs::remove_file(path).unwrap();
     }
 
     #[cfg(unix)]

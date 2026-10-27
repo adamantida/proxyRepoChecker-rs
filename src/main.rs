@@ -95,7 +95,7 @@ fn print_summary(s: &Summary) {
         fmt_dur(s.total_secs).yellow()
     );
 
-    println!("  {}", "Источники".bold().underline());
+    println!("\n  {}", "Источники".cyan().bold());
     println!(
         "    подписок: {}   загружено: {}   ({})",
         s.fetch_sources,
@@ -103,9 +103,13 @@ fn print_summary(s: &Summary) {
         fmt_dur(s.fetch_secs)
     );
     if s.fetch_failed > 0 {
-        println!("    ошибок загрузки: {}", s.fetch_failed);
+        println!(
+            "    {} {}",
+            "Ошибок загрузки:".yellow().bold(),
+            s.fetch_failed.to_string().yellow()
+        );
         for failure in &s.fetch_failure_examples {
-            println!("      {failure}");
+            println!("      {} {failure}", "!".yellow().bold());
         }
     }
     println!(
@@ -121,15 +125,19 @@ fn print_summary(s: &Summary) {
     if s.unsupported > 0 {
         bad.push_str(&format!("   неподдерж.: {}", s.unsupported));
     }
-    println!("    {bad}");
+    println!("    {}", bad.dimmed());
 
     if s.geo {
-        println!("  {}", "GeoIP".bold().underline());
-        println!("    стран: {}   ({})", s.geo_countries, fmt_dur(s.geo_secs));
+        println!("\n  {}", "GeoIP".cyan().bold());
+        println!(
+            "    стран: {}   ({})",
+            s.geo_countries.to_string().green(),
+            fmt_dur(s.geo_secs).dimmed()
+        );
     }
 
     if s.tcp_enabled {
-        println!("  {}", "TCP ping".bold().underline());
+        println!("\n  {}", "TCP ping".cyan().bold());
         let pct = percentage(s.tcp_alive, s.tcp_total);
         println!(
             "    живых: {}/{} ({pct:.1}%)   ({})",
@@ -140,7 +148,7 @@ fn print_summary(s: &Summary) {
     }
 
     if s.speed_enabled {
-        println!("  {}", "Скорость (xray)".bold().underline());
+        println!("\n  {}", "Скорость (Xray)".cyan().bold());
         let pct = percentage(s.speed_passed, s.speed_total);
         println!(
             "    прошли порог: {}/{} ({pct:.1}%)   ({})",
@@ -156,7 +164,11 @@ fn print_summary(s: &Summary) {
             );
         }
         if s.bad_outbounds > 0 {
-            println!("    битых outbound: {}", s.bad_outbounds);
+            println!(
+                "    {} {}",
+                "Некорректных outbound:".yellow(),
+                s.bad_outbounds.to_string().yellow()
+            );
         }
     }
 
@@ -179,13 +191,23 @@ fn print_summary(s: &Summary) {
     .map(|(p, n)| format!("{p} ({n})"))
     .collect();
     if !files.is_empty() {
-        println!("  {} {}", "Файлы:".bold(), files.join(", "));
+        println!("\n  {}", "Файлы".cyan().bold());
+        for file in files {
+            println!("    {} {}", "•".dimmed(), file);
+        }
     }
     println!("{}", line.bold().cyan());
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() {
+    if let Err(error) = run_app().await {
+        print_error(&error);
+        std::process::exit(1);
+    }
+}
+
+async fn run_app() -> anyhow::Result<()> {
     let cli = Cli::parse();
     if let Err(message) = cli.validate() {
         use clap::{error::ErrorKind, CommandFactory};
@@ -207,6 +229,20 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+fn print_error(error: &anyhow::Error) {
+    let mut causes = error.chain();
+    if let Some(context) = causes.next() {
+        eprintln!(
+            "\n{} {}",
+            "✖ Ошибка".red().bold(),
+            context.to_string().red()
+        );
+    }
+    for cause in causes {
+        eprintln!("  {} {}", "└─".yellow().bold(), cause.to_string().yellow());
+    }
 }
 
 fn restore_cancelled_alive(path: &Path, previous: Option<Vec<u8>>) -> anyhow::Result<()> {
@@ -280,6 +316,65 @@ mod tests {
         assert!(dropped.load(Ordering::SeqCst));
     }
 
+    #[tokio::test]
+    async fn completed_pipeline_returns_its_summary() {
+        let expected = Summary {
+            links: 7,
+            unique: 3,
+            alive: 2,
+            ..Summary::default()
+        };
+
+        let outcome = run_with_cancellation(
+            async { Ok(expected) },
+            std::future::pending::<std::io::Result<()>>(),
+        )
+        .await
+        .unwrap();
+
+        match outcome {
+            super::RunOutcome::Completed(summary) => {
+                assert_eq!(summary.links, 7);
+                assert_eq!(summary.unique, 3);
+                assert_eq!(summary.alive, 2);
+            }
+            super::RunOutcome::Cancelled => panic!("pipeline completion was lost"),
+        }
+    }
+
+    #[tokio::test]
+    async fn pipeline_error_is_returned_when_it_finishes_first() {
+        let result = run_with_cancellation(
+            async { anyhow::bail!("pipeline failed") },
+            std::future::pending::<std::io::Result<()>>(),
+        )
+        .await;
+
+        let error = match result {
+            Ok(_) => panic!("pipeline error was lost"),
+            Err(error) => error,
+        };
+        assert_eq!(error.to_string(), "pipeline failed");
+    }
+
+    #[tokio::test]
+    async fn cancellation_signal_error_is_propagated() {
+        let result =
+            run_with_cancellation(std::future::pending::<anyhow::Result<Summary>>(), async {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "signal handler failed",
+                ))
+            })
+            .await;
+
+        let error = match result {
+            Ok(_) => panic!("signal error was lost"),
+            Err(error) => error,
+        };
+        assert_eq!(error.to_string(), "signal handler failed");
+    }
+
     #[test]
     fn cancellation_restores_prior_alive_file_or_removes_new_partial_file() {
         let temp = TempDir::new();
@@ -295,6 +390,16 @@ mod tests {
         fs::write(&new_file, b"partial tcp result\n").unwrap();
         super::restore_cancelled_alive(&new_file, None).unwrap();
         assert!(!new_file.exists());
+        super::restore_cancelled_alive(&new_file, None).unwrap();
+    }
+
+    #[test]
+    fn cancellation_restore_propagates_file_removal_errors() {
+        let temp = TempDir::new();
+
+        let error = super::restore_cancelled_alive(temp.path(), None).unwrap_err();
+
+        assert!(error.downcast_ref::<std::io::Error>().is_some());
     }
 
     static NEXT_TEMP_ID: AtomicUsize = AtomicUsize::new(0);
@@ -1253,5 +1358,16 @@ mod tests {
     #[test]
     fn print_summary_handles_disabled_and_empty_optional_sections() {
         print_summary(&Summary::default());
+    }
+
+    #[test]
+    fn print_summary_handles_enabled_empty_tcp_and_speed_sections() {
+        print_summary(&Summary {
+            tcp_enabled: true,
+            tcp_total: 0,
+            speed_enabled: true,
+            speed_total: 0,
+            ..Summary::default()
+        });
     }
 }

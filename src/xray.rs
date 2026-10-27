@@ -1324,11 +1324,13 @@ mod tests {
         }
 
         let flag = DropFlag(Arc::clone(&dropped));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             let _flag = flag;
+            let _ = started_tx.send(());
             std::future::pending::<()>().await;
         });
-        tokio::task::yield_now().await;
+        started_rx.await.unwrap();
         let guard = ReporterTask(Some(task));
         drop(guard);
         tokio::task::yield_now().await;
@@ -1373,6 +1375,41 @@ mod tests {
             .unwrap();
 
         assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_all_tolerates_progress_labels_with_unmatched_braces() {
+        let dir = TestDir::new();
+        let checker = test_checker(
+            dir.path("missing-xray"),
+            dir.path("work"),
+            Duration::from_secs(1),
+        );
+
+        let result = checker
+            .run_all(vec![sample_proxy()], 1, 1, speed_opts(), "{unknown}", None)
+            .await
+            .unwrap();
+
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_all_returns_immediately_for_an_empty_input() {
+        let dir = TestDir::new();
+        let checker = test_checker(
+            dir.path("missing-xray"),
+            dir.path("work"),
+            Duration::from_secs(1),
+        );
+
+        let result = checker
+            .run_all(Vec::new(), 0, 0, speed_opts(), "empty", None)
+            .await
+            .unwrap();
+
+        assert!(result.is_empty());
+        assert!(!dir.path("work").exists());
     }
 
     #[test]
@@ -1497,6 +1534,25 @@ mod tests {
         assert!(proxies.iter().any(|proxy| proxy.speed_kbs.is_nan()));
     }
 
+    #[test]
+    fn speed_sort_orders_finite_results_from_fastest_to_slowest() {
+        let mut slow = sample_proxy();
+        slow.name = "slow".into();
+        slow.speed_kbs = 1.5;
+        let mut fast = sample_proxy();
+        fast.name = "fast".into();
+        fast.speed_kbs = 9.0;
+        let mut medium = sample_proxy();
+        medium.name = "medium".into();
+        medium.speed_kbs = 4.25;
+        let mut proxies = vec![slow, fast, medium];
+
+        sort_by_speed(&mut proxies);
+
+        let names: Vec<_> = proxies.iter().map(|proxy| proxy.name.as_str()).collect();
+        assert_eq!(names, ["fast", "medium", "slow"]);
+    }
+
     #[tokio::test]
     async fn progress_reporter_skips_tty_and_stops_after_all_items_finish() {
         let good = Arc::new(Mutex::new(Vec::new()));
@@ -1518,11 +1574,41 @@ mod tests {
             .unwrap();
     }
 
+    #[tokio::test]
+    async fn progress_reporter_finishes_with_a_nonempty_good_counter() {
+        let good = Arc::new(Mutex::new(vec![sample_proxy(), sample_proxy()]));
+        let pb = ProgressBar::hidden();
+        pb.set_length(2);
+        pb.inc(2);
+
+        let reporter =
+            spawn_progress_reporter(pb, good, Instant::now(), false, Duration::from_millis(1))
+                .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), reporter)
+            .await
+            .expect("reporter should stop when all items are done")
+            .unwrap();
+    }
+
     #[test]
     fn read_output_formats_wait_errors() {
         let message = format_read_output(Err(std::io::Error::other("fixture wait failure")));
         assert!(message.contains("чтение вывода ядра"));
         assert!(message.contains("fixture wait failure"));
+    }
+
+    #[test]
+    fn read_output_formats_successful_stdout_and_stderr() {
+        let output = std::process::Output {
+            status: std::process::ExitStatus::default(),
+            stdout: b"stdout fixture\n".to_vec(),
+            stderr: b"stderr fixture\n".to_vec(),
+        };
+
+        let message = format_read_output(Ok(output));
+
+        assert_eq!(message, "stdout fixture\n\nstderr fixture\n");
     }
 
     #[tokio::test]
@@ -1654,7 +1740,7 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn run_all_keeps_successful_proxy_and_writes_incremental_good_file() {
+    async fn run_all_filters_slow_proxies_and_reports_good_file_write_errors() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = TestDir::new();
@@ -1744,6 +1830,129 @@ PY
             std::fs::read_to_string(good_path).unwrap(),
             format!("{}\n", crate::output::line(&proxies[0], true))
         );
+        assert_eq!(std::fs::read_dir(&work).unwrap().count(), 0);
+
+        let slow = checker
+            .run_all(
+                vec![sample_proxy()],
+                1,
+                1,
+                SpeedOpts {
+                    primary: Some("http://example.test/download".into()),
+                    connect_timeout_s: 1.0,
+                    timeout_s: 2.0,
+                    max_mb: 0.5,
+                    min_kb: f64::MAX,
+                },
+                "slow proxy",
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(slow.is_empty());
+
+        let invalid_good_path = dir.path("good-directory");
+        std::fs::create_dir(&invalid_good_path).unwrap();
+        let error = checker
+            .run_all(
+                vec![sample_proxy()],
+                1,
+                1,
+                SpeedOpts {
+                    primary: Some("http://example.test/download".into()),
+                    connect_timeout_s: 1.0,
+                    timeout_s: 2.0,
+                    max_mb: 0.5,
+                    min_kb: 1.0,
+                },
+                "write error",
+                Some(invalid_good_path.to_string_lossy().into_owned()),
+            )
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("ошибка промежуточной записи good-файла"));
+        assert_eq!(std::fs::read_dir(work).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn reporter_stop_handles_missing_task_and_aborts_running_task() {
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        struct DropFlag(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        ReporterTask(None).stop().await;
+
+        let flag = DropFlag(Arc::clone(&dropped));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _flag = flag;
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        started_rx.await.unwrap();
+        ReporterTask(Some(task)).stop().await;
+
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn progress_reporter_keeps_reporting_until_all_items_finish() {
+        let good = Arc::new(Mutex::new(vec![sample_proxy()]));
+        let pb = ProgressBar::hidden();
+        pb.set_length(2);
+        let reporter = spawn_progress_reporter(
+            pb.clone(),
+            good,
+            Instant::now(),
+            false,
+            Duration::from_millis(1),
+        )
+        .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !reporter.is_finished() {
+                pb.inc(1);
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("reporter should exit after progress reaches the total");
+        reporter.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn bad_outbound_error_splits_unmatched_batch_and_cleans_configs() {
+        let dir = TestDir::new();
+        let work = dir.path("work");
+        std::fs::create_dir(&work).unwrap();
+        let checker = test_checker(
+            dir.path("missing-xray"),
+            work.clone(),
+            Duration::from_secs(1),
+        );
+        let pb = ProgressBar::hidden();
+        pb.set_length(2);
+        let result = Checker::handle_failure(
+            &checker,
+            "fixture core exit without an outbound tag",
+            vec![
+                (sample_proxy(), checker.base_port),
+                (sample_proxy(), checker.base_port.wrapping_add(1)),
+            ],
+            speed_opts(),
+            pb.clone(),
+        )
+        .await;
+
+        assert!(result.is_empty());
+        assert_eq!(checker.bad_outbounds(), 0);
+        assert_eq!(pb.position(), 2);
         assert_eq!(std::fs::read_dir(work).unwrap().count(), 0);
     }
 }

@@ -292,6 +292,11 @@ mod tests {
     }
 
     #[test]
+    fn default_checkpoint_matches_new_checkpoint() {
+        assert_eq!(Checkpoint::default(), Checkpoint::new());
+    }
+
+    #[test]
     fn round_trip_preserves_stage_links_proxy_results_and_final_output() {
         let dir = TestDir::new();
         let mut checkpoint = Checkpoint::new();
@@ -465,6 +470,20 @@ mod tests {
     }
 
     #[test]
+    fn proxy_snapshot_restores_each_supported_protocol() {
+        for proto in ["vmess", "trojan", "shadowsocks"] {
+            let mut snapshot = proxy_snapshot();
+            snapshot.proto = proto.into();
+
+            let restored = snapshot.into_proxy().unwrap();
+
+            assert_eq!(restored.proto, proto);
+            assert_eq!(restored.host, "edge.example");
+            assert_eq!(restored.port, 443);
+        }
+    }
+
+    #[test]
     fn unknown_stage_is_rejected_as_malformed_data() {
         let dir = TestDir::new();
         std::fs::write(
@@ -473,5 +492,53 @@ mod tests {
         )
         .unwrap();
         assert!(Checkpoint::load(dir.file()).is_err());
+    }
+
+    #[test]
+    fn every_pipeline_stage_serializes_to_its_stable_snake_case_name() {
+        let stages = [
+            (PipelineStage::Fetched, "fetched"),
+            (PipelineStage::Parsed, "parsed"),
+            (PipelineStage::GeoIp, "geo_ip"),
+            (PipelineStage::TcpPing, "tcp_ping"),
+            (PipelineStage::Speed, "speed"),
+            (PipelineStage::Complete, "complete"),
+        ];
+
+        for (stage, expected) in stages {
+            let encoded = serde_json::to_string(&stage).unwrap();
+            assert_eq!(encoded, format!("\"{expected}\""));
+            assert_eq!(
+                serde_json::from_str::<PipelineStage>(&encoded).unwrap(),
+                stage
+            );
+        }
+    }
+
+    #[test]
+    fn load_rejects_a_required_field_with_the_wrong_json_type() {
+        let dir = TestDir::new();
+        std::fs::write(
+            dir.file(),
+            br#"{"schema_version":"3","stage":"fetched","raw_links":[],"processed_links":[],"proxies":[],"final_links":[]}"#,
+        )
+        .unwrap();
+
+        let error = Checkpoint::load(dir.file()).unwrap_err();
+
+        assert!(error.to_string().contains("corrupt or malformed"));
+    }
+
+    #[test]
+    fn save_reports_write_failure_and_cleans_up_when_destination_is_a_directory() {
+        let dir = TestDir::new();
+        let destination = dir.0.join("checkpoint.json");
+        std::fs::create_dir(&destination).unwrap();
+
+        let error = Checkpoint::new().save(&destination).unwrap_err();
+
+        assert!(error.to_string().contains("atomically write checkpoint"));
+        assert!(destination.is_dir());
+        assert_eq!(dir.directory_entries(), vec![destination]);
     }
 }
