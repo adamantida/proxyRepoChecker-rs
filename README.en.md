@@ -6,7 +6,7 @@
 
 `proxy-rs` collects proxies from subscriptions, checks connectivity and speed, and helps prepare a Clash/mihomo configuration. It runs on Windows, macOS, and Linux.
 
-[![Cross-platform CI](https://img.shields.io/github/actions/workflow/status/tnAnGel/proxyRepoChecker-rs/cross-platform.yml?label=Cross-platform%20CI)](https://github.com/tnAnGel/proxyRepoChecker-rs/actions/workflows/cross-platform.yml)
+[![CI checks](https://img.shields.io/badge/CI-manual%20checks-blue?logo=githubactions&logoColor=white)](https://github.com/tnAnGel/proxyRepoChecker-rs/actions/workflows/cross-platform.yml)
 ![Rust 2021](https://img.shields.io/badge/Rust-2021-orange)
 ![Windows · macOS · Linux](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-64748b)
 
