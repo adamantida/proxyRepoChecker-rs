@@ -2,19 +2,21 @@
 
 # proxy-rs
 
-**Collect. Check. Keep the proxies that work.**
+**Find working proxies without the busywork.**
 
-A cross-platform Rust CLI that processes subscriptions through GeoIP, applicable TCP checks, speed tests using Xray or Hysteria 1, and ready-to-use Clash/mihomo configuration.
+`proxy-rs` collects proxies from subscriptions, checks connectivity and speed, and helps prepare a Clash/mihomo configuration. It runs on Windows, macOS, and Linux.
 
-[![Cross-platform CI](https://img.shields.io/github/actions/workflow/status/adamantida/proxyRepoChecker-rs/cross-platform.yml?label=Cross-platform%20CI)](https://github.com/adamantida/proxyRepoChecker-rs/actions/workflows/cross-platform.yml)
+[![Cross-platform CI](https://img.shields.io/github/actions/workflow/status/tnAnGel/proxyRepoChecker-rs/cross-platform.yml?label=Cross-platform%20CI)](https://github.com/tnAnGel/proxyRepoChecker-rs/actions/workflows/cross-platform.yml)
 ![Rust 2021](https://img.shields.io/badge/Rust-2021-orange)
 ![Windows · macOS · Linux](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-64748b)
 
 [Русский](README.md) · [English](README.en.md) · [简体中文](README.zh-CN.md)
 
+🚀 [Quick start](#quick-start) · 🌐 [Ready-to-use results](#published-results) · 📚 [Documentation](#documentation)
+
 </div>
 
-## What it does
+## ✨ What `proxy-rs` can do
 
 ```mermaid
 flowchart LR
@@ -35,16 +37,18 @@ flowchart LR
 - Diagnoses a single proxy link with `--check-one FILE`, including core startup, SOCKS readiness, and download.
 - Builds on Windows, macOS, and Linux; Xray is selected for the current OS and architecture.
 
-## Quick start
+<a id="quick-start"></a>
 
-Install stable Rust and Cargo, then run these commands from the repository root:
+## 🚀 Quick start
+
+You’ll need stable Rust and Cargo. Clone the repository, then run these commands from its root:
 
 ```sh
 cargo build --workspace --release
 cargo run --release -- --set 3 -n 200 --shuffle
 ```
 
-The second command is a short smoke run using a small source set and a 200-proxy limit. See every CLI option with:
+The second command is a short run using a small source set and a limit of 200 proxies. For the full list of options, run:
 
 ```sh
 cargo run -- --help
@@ -60,7 +64,7 @@ proxy-rs --check-one one-proxy.txt
 
 `--singbox-check` validates the generated config with the installed sing-box CLI (`sing-box check`). If the binary is not on `PATH`, pass it with `--singbox-bin FILE`. The speed report includes each target's sanitized result; the source report shows errors and unique, TCP-live, and speed-qualified counts per feed.
 
-### Build scripts
+### 🛠 Build scripts
 
 Use `scripts/build.sh` from Bash on macOS/Linux and `scripts/build.bat` from Windows `cmd.exe`. Both default to the host platform and can select a platform, architecture, or all platforms:
 
@@ -79,7 +83,7 @@ scripts\build.bat all --arch aarch64 --install-target
 
 `--install-target` adds only the Rust target with rustup. Cross-compilation also needs a compatible linker and system SDK: Windows GNU needs a MinGW linker, Windows ARM64 needs the MSVC toolchain, and macOS builds need the Apple SDK/toolchain. A build script cannot install these host tools; non-native builds may need Cargo linker configuration. Native binaries are in `target/release/`; cross-builds are in `target/<rust-target>/release/`.
 
-### Safer fetching and resume
+### 🔒 Safer fetching and resume
 
 Subscription TLS certificates are verified by default. Each response is limited to 16 MiB; two delayed retries are the default. The `.proxy_cache` cache uses `ETag`/`Last-Modified` and can fall back to the last successful response during a temporary failure. Set another directory with `--fetch-cache-dir DIR` or disable caching with `--no-fetch-cache`. `--insecure-source-tls` disables certificate verification and should be used only deliberately.
 
@@ -92,7 +96,7 @@ proxy-rs --resume --checkpoint run.checkpoint
 
 `--resume` requires `--checkpoint FILE`. The JSON source report contains per-source status, stage counts, and exact unsupported-feature reasons; credentials, query, fragment, and path are stripped from source URLs. Checkpoints contain links and results needed to resume, so keep the file private.
 
-### Filtering and JSON output
+### 🎛️ Filtering and JSON output
 
 `--protocol` and `--country` keep selected protocols and countries (ISO codes or GeoIP tags); repeat an option or provide comma-separated values. `--only-new` parses outbound keys from the existing `--output` file and removes proxies whose keys are already present. `--json-output FILE` also writes the final alive proxies as a JSON array containing only the summary fields `protocol`, `server`, `port`, `name`, `country`, `display`, `ping_ms`, and `speed_kbs`. It does not include proxy URIs, passwords, UUIDs, or connection settings.
 
@@ -102,7 +106,7 @@ cargo run --release -- --url 'https://example.org/sub' \
   --json-output new-proxies.json
 ```
 
-## Results
+## 📂 Output files
 
 | File | Contents |
 |---|---|
@@ -116,7 +120,9 @@ cargo run --release -- --url 'https://example.org/sub' \
 
 Use CLI flags to change output paths. Generated results and local logs are excluded from Git.
 
-## Documentation
+<a id="documentation"></a>
+
+## 📚 Documentation
 
 - [Полное руководство на русском](docs/ru/README.md)
 - [Full documentation in English](docs/en/README.md)
@@ -125,7 +131,7 @@ Use CLI flags to change output paths. Generated results and local logs are exclu
 
 The manuals cover every CLI option, input data, pipeline stages, output formats, Xray, GeoIP, Clash/mihomo, architecture, tests, and CI.
 
-## Development
+## 👩‍💻 Development
 
 ```sh
 cargo fmt --all -- --check
@@ -139,25 +145,31 @@ The workspace tests also run a deterministic fuzz-style corpus of malformed prox
 
 GitHub Actions checks Ubuntu, macOS, and Windows. A separate Ubuntu job measures coverage and runs mutation testing.
 
-## Releases
+## 📦 Releases
 
 Pushing a `vX.Y.Z` tag that matches the version in `Cargo.toml` builds archives for Linux, macOS, and Windows. GitHub Actions attaches SHA-256 checksums and creates a **draft** Release containing the three-language documentation, ready for review and editing before publication.
 
-## Published results
+<a id="published-results"></a>
 
-- [Clash/mihomo configuration — open RAW](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/clash.yaml)
-- [Fast proxies (`good.txt`) — open RAW](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/good.txt)
-- [All proxies after checks (`alive.txt`) — open RAW](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/alive.txt)
-- [Rejected proxies (`dead.txt`) — open RAW](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/dead.txt)
+## 🌐 Ready-to-use results
 
-The publishing workflow runs at the start of every hour (00:00 UTC) and can also be started manually from GitHub Actions. Files on `dist` are updated after a successful run; if a run fails, the previous versions remain available.
+Open a RAW file to view it or copy its link into your app:
 
-## uSphere VPN
+| What you need | File |
+|---|---|
+| Ready-to-use Clash/mihomo config | [📥 clash.yaml](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/clash.yaml) |
+| Proxies that passed the speed check | [⚡ good.txt](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/good.txt) |
+| All proxies after enabled checks | [✅ alive.txt](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/alive.txt) |
+| Proxies rejected by checks | [🧾 dead.txt](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/dead.txt) |
+
+Publishing runs at the start of every hour (**00:00 UTC**) and can also be started manually from [GitHub Actions](https://github.com/tnAnGel/proxyRepoChecker-rs/actions/workflows/clash.yml). New files appear after a successful check; if a run fails, the current links keep serving the previous results.
+
+## 💬 uSphere VPN
 
 Looking for a ready-to-use VPN for everyday browsing? Try **uSphere VPN**, a paid service we recommend for its quality. Visit the Telegram bot to review the terms and choose an option that works for you:
 
 [Visit uSphere VPN on Telegram →](https://t.me/uSphereVPN_bot)
 
-## License
+## 📄 License
 
 This project is distributed under the [MIT License](LICENSE).

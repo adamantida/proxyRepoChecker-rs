@@ -2,19 +2,21 @@
 
 # proxy-rs
 
-**Собирайте. Проверяйте. Используйте лучшие прокси.**
+**Найдите рабочие прокси без лишней рутины.**
 
-Кроссплатформенный Rust CLI: от подписок и GeoIP до подходящих TCP-проверок, замера скорости через Xray или Hysteria 1 и готового конфига Clash/mihomo.
+`proxy-rs` собирает прокси из подписок, проверяет доступность и скорость, а затем помогает подготовить конфигурацию для Clash/mihomo. Работает на Windows, macOS и Linux.
 
-[![Cross-platform CI](https://img.shields.io/github/actions/workflow/status/adamantida/proxyRepoChecker-rs/cross-platform.yml?label=Cross-platform%20CI)](https://github.com/adamantida/proxyRepoChecker-rs/actions/workflows/cross-platform.yml)
+[![Cross-platform CI](https://img.shields.io/github/actions/workflow/status/tnAnGel/proxyRepoChecker-rs/cross-platform.yml?label=Cross-platform%20CI)](https://github.com/tnAnGel/proxyRepoChecker-rs/actions/workflows/cross-platform.yml)
 ![Rust 2021](https://img.shields.io/badge/Rust-2021-orange)
 ![Windows · macOS · Linux](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-64748b)
 
 [Русский](README.md) · [English](README.en.md) · [简体中文](README.zh-CN.md)
 
+🚀 [Быстрый запуск](#quick-start) · 🌐 [Готовые результаты](#published-results) · 📚 [Документация](#documentation)
+
 </div>
 
-## Что делает проект
+## ✨ Что умеет `proxy-rs`
 
 ```mermaid
 flowchart LR
@@ -35,16 +37,18 @@ flowchart LR
 - Диагностирует одну ссылку через `--check-one FILE`, включая запуск ядра, SOCKS-подключение и загрузку.
 - Собирается на Windows, macOS и Linux; Xray подбирается под ОС и архитектуру.
 
-## Быстрый запуск
+<a id="quick-start"></a>
 
-Нужны Rust stable и Cargo. Из корня репозитория:
+## 🚀 Быстрый запуск
+
+Нужны Rust stable и Cargo. Склонируйте репозиторий и выполните команды из его корня:
 
 ```sh
 cargo build --workspace --release
 cargo run --release -- --set 3 -n 200 --shuffle-seed 20261028
 ```
 
-Второй пример — короткий проверочный запуск на небольшом наборе с лимитом в 200 прокси. Полный список параметров:
+Вторая команда запускает короткую проверку на небольшом наборе источников (до 200 прокси). Подробную справку можно открыть так:
 
 ```sh
 cargo run -- --help
@@ -60,7 +64,7 @@ proxy-rs --check-one one-proxy.txt
 
 `--singbox-check` валидирует созданный конфиг установленным sing-box (`sing-box check`). Если бинарник не находится в `PATH`, укажите его через `--singbox-bin FILE`. Отчёт скорости содержит результат каждой цели с очищенным URL, а отчёт источников показывает по каждой подписке причины ошибок и числа уникальных, TCP-живых и прошедших порог прокси.
 
-### Сборка скриптом
+### 🛠 Сборка скриптом
 
 `scripts/build.sh` предназначен для Bash на macOS/Linux, `scripts/build.bat` — для Windows `cmd.exe`. Оба собирают текущую платформу по умолчанию или выбранную платформу/архитектуру:
 
@@ -79,7 +83,7 @@ scripts\build.bat all --arch aarch64 --install-target
 
 `--install-target` устанавливает только Rust target через rustup. Для cross-compile дополнительно нужны подходящие linker и системные SDK: Windows GNU требует совместимый MinGW linker, Windows ARM64 — MSVC toolchain, а сборка macOS — Apple SDK/toolchain. Скрипт на одной ОС не может сам предоставить эти инструменты; не-native сборки могут потребовать настройки Cargo linker. Нативный бинарник находится в `target/release/`, cross-build — в `target/<rust-target>/release/`.
 
-### Безопасная загрузка и возобновление
+### 🔒 Безопасная загрузка и возобновление
 
 TLS-сертификаты подписок проверяются стандартным способом. По умолчанию ответ ограничен 16 MiB на источник, выполняются две повторные попытки с задержкой; кэш `.proxy_cache` использует `ETag`/`Last-Modified` и может отдать последний успешный ответ при временной ошибке. Каталог меняется через `--fetch-cache-dir DIR`, кэш отключается через `--no-fetch-cache`; `--insecure-source-tls` отключает проверку сертификата и применять его следует только осознанно.
 
@@ -92,7 +96,7 @@ proxy-rs --resume --checkpoint run.checkpoint
 
 `--resume` требует `--checkpoint FILE`. JSON-отчёт содержит статусы, этапные счётчики и точные причины неподдержки по каждой подписке; URL в нём очищаются от учётных данных, query, fragment и пути. Checkpoint хранит ссылки и результаты для продолжения, поэтому держите его как приватный файл.
 
-### Фильтры и JSON-результаты
+### 🎛️ Фильтры и JSON-результаты
 
 `--protocol` и `--country` оставляют выбранные протоколы и страны (ISO-коды или GeoIP-теги); параметры можно повторять или перечислять через запятую. `--only-new` разбирает ссылки из существующего файла `--output` и удаляет прокси с уже известным outbound-ключом. `--json-output FILE` дополнительно записывает итоговые прокси в JSON-массив с полями `protocol`, `server`, `port`, `name`, `country`, `display`, `ping_ms` и `speed_kbs`; URI, пароли, UUID и настройки подключений в JSON не попадают.
 
@@ -102,7 +106,7 @@ cargo run --release -- --url 'https://example.org/sub' \
   --json-output new-proxies.json
 ```
 
-## Результаты
+## 📂 Файлы результатов
 
 | Файл | Содержимое |
 |---|---|
@@ -116,7 +120,9 @@ cargo run --release -- --url 'https://example.org/sub' \
 
 Пути меняются флагами CLI. Файлы результатов и локальные логи исключены из Git.
 
-## Документация
+<a id="documentation"></a>
+
+## 📚 Документация
 
 - [Полное руководство на русском](docs/ru/README.md)
 - [Full documentation in English](docs/en/README.md)
@@ -125,7 +131,7 @@ cargo run --release -- --url 'https://example.org/sub' \
 
 В руководствах описаны все аргументы CLI, входные данные, этапы обработки, форматы результатов, Xray, GeoIP, Clash/mihomo, архитектура, тестирование и CI.
 
-## Разработка
+## 👩‍💻 Разработка
 
 ```sh
 cargo fmt --all -- --check
@@ -139,25 +145,31 @@ cargo bench --bench pipeline
 
 GitHub Actions проверяет Ubuntu, macOS и Windows. Отдельная Ubuntu job измеряет покрытие и запускает mutation testing.
 
-## Выпуски
+## 📦 Выпуски
 
 Push тега вида `vX.Y.Z`, совпадающего с версией в `Cargo.toml`, запускает сборку архивов для Linux, macOS и Windows. GitHub Actions прикладывает SHA-256 суммы и создаёт **черновик** Release с документацией на трёх языках; перед публикацией его можно проверить и отредактировать.
 
-## Опубликованные результаты
+<a id="published-results"></a>
 
-- [Clash/mihomo конфигурация — открыть RAW](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/clash.yaml)
-- [Быстрые прокси (`good.txt`) — открыть RAW](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/good.txt)
-- [Все прокси после проверок (`alive.txt`) — открыть RAW](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/alive.txt)
-- [Отклонённые прокси (`dead.txt`) — открыть RAW](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/dead.txt)
+## 🌐 Готовые результаты
 
-Workflow публикации запускается каждый час в 00 минут UTC и может быть запущен вручную через GitHub Actions. Файлы в `dist` обновляются после успешного завершения прогона; если прогон завершится ошибкой, предыдущая версия останется доступна.
+Можно сразу открыть RAW-файл или скопировать ссылку в приложение:
 
-## uSphere VPN
+| Что нужно | Файл |
+|---|---|
+| Готовый конфиг для Clash/mihomo | [📥 clash.yaml](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/clash.yaml) |
+| Прокси, прошедшие проверку скорости | [⚡ good.txt](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/good.txt) |
+| Все прокси после включённых проверок | [✅ alive.txt](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/alive.txt) |
+| Прокси, отклонённые проверками | [🧾 dead.txt](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/dead.txt) |
+
+Публикация запускается каждый час, в **00 минут UTC**, и вручную через [GitHub Actions](https://github.com/tnAnGel/proxyRepoChecker-rs/actions/workflows/clash.yml). Новые файлы появляются после успешного завершения проверки; если запуск завершится ошибкой, текущие ссылки продолжат работать с предыдущими результатами.
+
+## 💬 uSphere VPN
 
 Нужен готовый VPN-сервис для повседневного использования? Попробуйте **uSphere VPN** — платный сервис, который мы рекомендуем за качество обслуживания. Откройте Telegram-бота, ознакомьтесь с условиями и выберите подходящий вариант:
 
 [Перейти к uSphere VPN в Telegram →](https://t.me/uSphereVPN_bot)
 
-## Лицензия
+## 📄 Лицензия
 
 Проект распространяется по лицензии [MIT](LICENSE).
