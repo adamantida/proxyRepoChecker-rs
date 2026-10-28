@@ -531,8 +531,10 @@ mod tests {
 
     #[test]
     fn reason_counts_and_unique_count_are_independent_per_source() {
-        let mut counts = SourceCounts::default();
-        counts.unique = 3;
+        let mut counts = SourceCounts {
+            unique: 3,
+            ..SourceCounts::default()
+        };
         *counts.invalid_reasons.entry("bad uuid".into()).or_default() += 2;
         *counts
             .invalid_reasons
