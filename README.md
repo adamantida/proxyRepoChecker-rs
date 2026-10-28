@@ -143,7 +143,7 @@ cargo bench --bench pipeline
 
 `cargo test --workspace` также запускает детерминированный fuzz-style корпус повреждённых URI и GeoIP protobuf-данных. Это тестирование на фиксированном seeded-корпусе, а не отдельный coverage/fuzzing runtime.
 
-GitHub Actions проверяет Ubuntu, macOS и Windows. Отдельная Ubuntu job измеряет покрытие и запускает mutation testing.
+Проверка сборки и тестов на Ubuntu, macOS и Windows запускается вручную через workflow `cross-platform`. Автоматически по расписанию работает только сборщик прокси.
 
 ## 📦 Выпуски
 
@@ -162,7 +162,7 @@ Push тега вида `vX.Y.Z`, совпадающего с версией в `
 | Все прокси после включённых проверок | [✅ alive.txt](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/alive.txt) |
 | Прокси, отклонённые проверками | [🧾 dead.txt](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/dead.txt) |
 
-Публикация запускается каждый час, в **00 минут UTC**, и вручную через [GitHub Actions](https://github.com/tnAnGel/proxyRepoChecker-rs/actions/workflows/clash.yml). Новые файлы появляются после успешного завершения проверки; если запуск завершится ошибкой, текущие ссылки продолжат работать с предыдущими результатами.
+Публикация запускается каждые 30 минут — в **11 и 41 минуту UTC** — и вручную через [GitHub Actions](https://github.com/tnAnGel/proxyRepoChecker-rs/actions/workflows/proxy-collection.yml). Новые файлы появляются после успешного завершения проверки; если запуск завершится ошибкой, текущие ссылки продолжат работать с предыдущими результатами. GitHub может немного задержать запуск при высокой нагрузке.
 
 ## 💬 uSphere VPN
 

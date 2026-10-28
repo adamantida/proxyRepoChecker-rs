@@ -1,9 +1,9 @@
-name: clash-config
+name: proxy-collection
 
 on:
   schedule:
-    # Запуск каждый час в 00 минут (UTC)
-    - cron: "0 */1 * * *"
+    # Каждые 30 минут; сдвиг от границы часа уменьшает задержки планировщика.
+    - cron: "11,41 * * * *"
   workflow_dispatch:
     inputs:
       set:
@@ -18,7 +18,8 @@ permissions:
 
 concurrency:
   group: clash-gen
-  cancel-in-progress: true
+  # Не прерываем активную проверку, если следующий запуск уже подошёл по расписанию.
+  cancel-in-progress: false
 
 jobs:
   generate:

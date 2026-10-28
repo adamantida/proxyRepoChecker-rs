@@ -143,7 +143,7 @@ cargo bench --bench pipeline
 
 Workspace 测试还会运行确定性的 fuzz-style 测试语料，覆盖损坏的代理 URI 和 GeoIP protobuf 数据。这是带固定随机种子的回归测试，不是独立的覆盖引导 fuzzing runtime。
 
-GitHub Actions 会在 Ubuntu、macOS 和 Windows 上运行检查。另有 Ubuntu job 用于覆盖率统计和 mutation testing。
+Ubuntu、macOS 和 Windows 的构建与测试 workflow 可手动运行。代理收集器是唯一按计划自动运行的 workflow。
 
 ## 📦 发布版本
 
@@ -162,7 +162,7 @@ GitHub Actions 会在 Ubuntu、macOS 和 Windows 上运行检查。另有 Ubuntu
 | 通过已启用检查的全部代理 | [✅ alive.txt](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/alive.txt) |
 | 检查未通过的代理 | [🧾 dead.txt](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/dead.txt) |
 
-发布 workflow 每小时开始时（**UTC 00 分**）运行，也可在 [GitHub Actions](https://github.com/tnAnGel/proxyRepoChecker-rs/actions/workflows/clash.yml) 中手动启动。成功检查后才会更新文件；如果运行失败，现有链接仍会提供上一版结果。
+发布 workflow 每 30 分钟运行一次，即 **UTC 每小时的第 11 分钟和第 41 分钟**；也可在 [GitHub Actions](https://github.com/tnAnGel/proxyRepoChecker-rs/actions/workflows/proxy-collection.yml) 中手动启动。成功检查后才会更新文件；如果运行失败，现有链接仍会提供上一版结果。GitHub 负载较高时，计划任务可能稍有延迟。
 
 ## 💬 uSphere VPN
 

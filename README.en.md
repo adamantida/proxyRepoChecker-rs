@@ -143,7 +143,7 @@ cargo bench --bench pipeline
 
 The workspace tests also run a deterministic fuzz-style corpus of malformed proxy URIs and GeoIP protobuf data. It is seeded regression testing, not a separate coverage-guided fuzzing runtime.
 
-GitHub Actions checks Ubuntu, macOS, and Windows. A separate Ubuntu job measures coverage and runs mutation testing.
+The Ubuntu, macOS, and Windows build/test workflow is available for manual runs. The proxy collector is the only workflow scheduled to run automatically.
 
 ## 📦 Releases
 
@@ -162,7 +162,7 @@ Open a RAW file to view it or copy its link into your app:
 | All proxies after enabled checks | [✅ alive.txt](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/alive.txt) |
 | Proxies rejected by checks | [🧾 dead.txt](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/dead.txt) |
 
-Publishing runs at the start of every hour (**00:00 UTC**) and can also be started manually from [GitHub Actions](https://github.com/tnAnGel/proxyRepoChecker-rs/actions/workflows/clash.yml). New files appear after a successful check; if a run fails, the current links keep serving the previous results.
+Publishing runs every 30 minutes, at **:11 and :41 UTC**, and can also be started manually from [GitHub Actions](https://github.com/tnAnGel/proxyRepoChecker-rs/actions/workflows/proxy-collection.yml). New files appear after a successful check; if a run fails, the current links keep serving the previous results. GitHub may delay scheduled runs during periods of high load.
 
 ## 💬 uSphere VPN
 

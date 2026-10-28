@@ -396,11 +396,11 @@ CARGO_PROFILE_DEV_DEBUG=0 cargo +stable mutants --workspace --jobs 2 --timeout 1
 
 The coverage workflow pins a nightly toolchain for LLVM branch instrumentation and enforces at least 96% line coverage (the current Ubuntu measurement was 96.70% lines and 84.86% branches). Mutation testing runs on Ubuntu with two jobs. These tools need to be installed separately for local runs.
 
-On pushes and pull requests, the cross-platform workflow runs Clippy with warnings denied, a release build, and workspace tests on `ubuntu-latest`, `macos-latest`, and `windows-latest`.
+The cross-platform workflow is available through manual `workflow_dispatch`. It runs Clippy with warnings denied, a release build, and workspace tests on `ubuntu-latest`, `macos-latest`, and `windows-latest`; automatic push and pull-request triggers are disabled.
 
 The `.github/workflows/release.yml` workflow runs when a `v*` tag is pushed. It builds application and documentation archives on Linux, macOS, and Windows, generates SHA-256 checksums, and creates a draft GitHub Release for manual review.
 
-The separate `.github/workflows/clash.yml` scheduled workflow performs a real network run using the public source catalog, generates a Clash configuration, and publishes generated artifacts to the `dist` branch. It also supports manual dispatch. Do not invoke an equivalent full-source run locally unless you intentionally want the large network workload.
+The separate `.github/workflows/proxy-collection.yml` workflow runs every 30 minutes (at :11 and :41 UTC) or on manual dispatch. It performs a real network run using the public source catalog, generates a Clash configuration, and publishes artifacts to the `dist` branch. Scheduled runs do not cancel an active run. Do not invoke an equivalent full-source run locally unless you intentionally want the large network workload.
 
 ## Troubleshooting
 

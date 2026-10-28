@@ -408,9 +408,9 @@ cargo bench --bench pipeline
 
 CI 工作流：
 
-- `.github/workflows/cross-platform.yml`：Ubuntu、macOS、Windows 矩阵；运行 Clippy、release 构建和 workspace 测试。另有 Ubuntu 覆盖率与 mutation testing job；覆盖率命令要求至少 96% 行覆盖率。Ubuntu 当前实测为 96.70% 行覆盖率、84.86% 分支覆盖率；分支暂未设置单独门槛。
+- `.github/workflows/cross-platform.yml`：可通过 `workflow_dispatch` 手动运行 Ubuntu、macOS、Windows 矩阵；运行 Clippy、release 构建和 workspace 测试。自动 push 和 pull request 触发器已关闭。另有 Ubuntu 覆盖率与 mutation testing job；覆盖率命令要求至少 96% 行覆盖率。Ubuntu 当前实测为 96.70% 行覆盖率、84.86% 分支覆盖率；分支暂未设置单独门槛。
 - `.github/workflows/release.yml`：推送 `v*` 标签后运行，在 Linux、macOS 和 Windows 上构建程序与文档压缩包，生成 SHA-256 校验和，并创建供人工检查的 GitHub Release 草稿。
-- `.github/workflows/clash.yml`：每小时运行或手动触发；手动触发默认使用全部来源集合和 25000 个节点上限。在 Ubuntu 上构建并生成 Clash 配置及结果文件，然后 force-push 到专用于生成产物的 `dist` 分支。这个工作流会请求公共订阅与代理网络。
+- `.github/workflows/proxy-collection.yml`：每 30 分钟（UTC 每小时第 11 和第 41 分钟）运行一次，也可手动触发；手动触发默认使用全部来源集合和 25000 个节点上限。在 Ubuntu 上构建并生成 Clash 配置及结果文件，然后 force-push 到专用于生成产物的 `dist` 分支。新运行不会取消已开始的收集任务。这个工作流会请求公共订阅与代理网络。
 
 ## 常见问题排查
 

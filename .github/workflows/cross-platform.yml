@@ -1,8 +1,10 @@
 name: cross-platform
 
 on:
-  push:
-  pull_request:
+  # Ручной запуск сохраняет возможность проверить сборку и тесты по запросу.
+  # Автозапуски push/pull_request отключены, чтобы не запускать четыре проверки
+  # при каждом обновлении репозитория.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
