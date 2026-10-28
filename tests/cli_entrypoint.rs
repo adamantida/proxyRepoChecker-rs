@@ -50,6 +50,32 @@ fn run_with(args: &[&str]) -> std::process::Output {
         .expect("run proxy-rs binary")
 }
 
+#[test]
+fn binary_entrypoint_shows_validation_error_and_usage_for_invalid_options() {
+    let output = run_with(&["--concurrency", "0"]);
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("concurrency"), "{stderr}");
+    assert!(stderr.contains("Usage:"), "{stderr}");
+}
+
+#[test]
+fn binary_entrypoint_emits_structured_single_proxy_diagnostics() {
+    let temp = TestDir::new();
+    let input = temp.path("one-proxy.txt");
+    fs::write(&input, "\n# one unsupported link\nssr://fixture\n").unwrap();
+
+    let output = run_with(&["--check-one", input.to_str().unwrap()]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["parsed"]["status"], "unsupported");
+    assert_eq!(report["parsed"]["reason"], "ssr");
+    assert_eq!(report["failure"]["stage"], "parse");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("fixture-secret"));
+}
+
 fn write_geoip_fixture(path: &std::path::Path) {
     fn varint(mut value: u64) -> Vec<u8> {
         let mut bytes = Vec::new();

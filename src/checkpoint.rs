@@ -73,6 +73,8 @@ impl ProxySnapshot {
             "vmess" => "vmess",
             "trojan" => "trojan",
             "shadowsocks" => "shadowsocks",
+            "hysteria" => "hysteria",
+            "hysteria2" => "hysteria2",
             other => bail!("checkpoint contains unsupported proxy protocol: {other}"),
         };
         Ok(crate::parse::Proxy {
@@ -150,44 +152,33 @@ impl Checkpoint {
     /// Persist to `path` using the repository's same-directory atomic writer.
     /// Serialization completes before the destination can be modified.
     pub fn save(&self, path: impl AsRef<Path>) -> Result<()> {
+        self.save_with_limit(path.as_ref(), MAX_CHECKPOINT_BYTES)
+    }
+
+    fn save_with_limit(&self, path: &Path, max_bytes: u64) -> Result<()> {
         self.validate_version()?;
         let bytes = serde_json::to_vec_pretty(self).context("serialize checkpoint")?;
-        if bytes.len() as u64 > MAX_CHECKPOINT_BYTES {
-            bail!(
-                "checkpoint exceeds the {}-byte safety limit",
-                MAX_CHECKPOINT_BYTES
-            );
-        }
-        crate::output::write_bytes_atomic(path.as_ref(), &bytes, Some(0o600))
+        check_size_limit(bytes.len() as u64, max_bytes)?;
+        crate::output::write_bytes_atomic(path, &bytes, Some(0o600))
             .context("atomically write checkpoint")
     }
 
     /// Load a checkpoint. Returns `Ok(None)` only when the file does not exist;
     /// malformed data and unsupported versions are errors and never defaults.
     pub fn load(path: impl AsRef<Path>) -> Result<Option<Self>> {
-        if let Ok(metadata) = std::fs::metadata(path.as_ref()) {
-            if metadata.len() > MAX_CHECKPOINT_BYTES {
-                bail!(
-                    "checkpoint exceeds the {}-byte safety limit",
-                    MAX_CHECKPOINT_BYTES
-                );
-            }
+        Self::load_with_limit(path.as_ref(), MAX_CHECKPOINT_BYTES)
+    }
+
+    fn load_with_limit(path: &Path, max_bytes: u64) -> Result<Option<Self>> {
+        if let Ok(metadata) = std::fs::metadata(path) {
+            check_size_limit(metadata.len(), max_bytes)?;
         }
-        let file = match std::fs::File::open(path.as_ref()) {
+        let file = match std::fs::File::open(path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error).context("read checkpoint"),
         };
-        let mut bytes = Vec::new();
-        file.take(MAX_CHECKPOINT_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .context("read checkpoint")?;
-        if bytes.len() as u64 > MAX_CHECKPOINT_BYTES {
-            bail!(
-                "checkpoint exceeds the {}-byte safety limit",
-                MAX_CHECKPOINT_BYTES
-            );
-        }
+        let bytes = read_limited(file, max_bytes).context("read checkpoint")?;
         let checkpoint: Self =
             serde_json::from_slice(&bytes).context("checkpoint is corrupt or malformed")?;
         checkpoint.validate_version()?;
@@ -223,6 +214,29 @@ impl Checkpoint {
         }
         Ok(())
     }
+}
+
+fn check_size_limit(size: u64, max_bytes: u64) -> Result<()> {
+    if size > max_bytes {
+        bail!("checkpoint exceeds the {max_bytes}-byte safety limit");
+    }
+    Ok(())
+}
+
+fn read_limit(max_bytes: u64) -> u64 {
+    max_bytes
+        .checked_add(1)
+        .expect("checkpoint read limit must fit in u64")
+}
+
+fn read_limited(mut reader: impl Read, max_bytes: u64) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    reader
+        .by_ref()
+        .take(read_limit(max_bytes))
+        .read_to_end(&mut bytes)?;
+    check_size_limit(bytes.len() as u64, max_bytes)?;
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -442,6 +456,66 @@ mod tests {
         assert!(error.to_string().contains("safety limit"));
     }
 
+    #[test]
+    fn checkpoint_limit_is_512_mib_and_includes_the_exact_boundary() {
+        assert_eq!(MAX_CHECKPOINT_BYTES, 512 * 1024 * 1024);
+        assert!(check_size_limit(MAX_CHECKPOINT_BYTES, MAX_CHECKPOINT_BYTES).is_ok());
+        assert!(check_size_limit(MAX_CHECKPOINT_BYTES + 1, MAX_CHECKPOINT_BYTES).is_err());
+    }
+
+    #[test]
+    fn save_accepts_exact_limit_and_rejects_one_byte_over_without_touching_file() {
+        let dir = TestDir::new();
+        let path = dir.file();
+        let checkpoint = Checkpoint::new();
+        let serialized = serde_json::to_vec_pretty(&checkpoint).unwrap();
+        let exact_limit = serialized.len() as u64;
+
+        checkpoint.save_with_limit(&path, exact_limit).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), serialized);
+
+        std::fs::write(&path, b"previous").unwrap();
+        let error = checkpoint
+            .save_with_limit(&path, exact_limit - 1)
+            .unwrap_err();
+        assert!(error.to_string().contains("safety limit"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"previous");
+    }
+
+    #[test]
+    fn load_accepts_exact_limit_and_rejects_over_limit_during_bounded_read() {
+        let dir = TestDir::new();
+        let path = dir.file();
+        let checkpoint = Checkpoint::new();
+        let mut serialized = serde_json::to_vec(&checkpoint).unwrap();
+        let exact_limit = serialized.len() as u64;
+        std::fs::write(&path, &serialized).unwrap();
+
+        assert_eq!(
+            Checkpoint::load_with_limit(&path, exact_limit).unwrap(),
+            Some(checkpoint.clone())
+        );
+
+        serialized.push(b' ');
+        assert_eq!(read_limit(exact_limit), exact_limit + 1);
+        assert!(read_limited(std::io::Cursor::new(serialized.clone()), exact_limit).is_err());
+        std::fs::write(&path, serialized).unwrap();
+        let error = Checkpoint::load_with_limit(&path, exact_limit).unwrap_err();
+        assert!(error.to_string().contains("safety limit"));
+    }
+
+    #[test]
+    fn read_limit_is_exactly_one_byte_over_the_allowed_size() {
+        for limit in [0, 1, 1024] {
+            assert_eq!(read_limit(limit), limit + 1);
+            assert!(read_limited(std::io::Cursor::new(vec![b'x'; limit as usize]), limit).is_ok());
+            assert!(
+                read_limited(std::io::Cursor::new(vec![b'x'; limit as usize + 1]), limit).is_err()
+            );
+        }
+        assert_eq!(read_limit(MAX_CHECKPOINT_BYTES), 512 * 1024 * 1024 + 1);
+    }
+
     #[cfg(unix)]
     #[test]
     fn save_restricts_checkpoint_permissions_to_the_owner() {
@@ -471,7 +545,7 @@ mod tests {
 
     #[test]
     fn proxy_snapshot_restores_each_supported_protocol() {
-        for proto in ["vmess", "trojan", "shadowsocks"] {
+        for proto in ["vmess", "trojan", "shadowsocks", "hysteria", "hysteria2"] {
             let mut snapshot = proxy_snapshot();
             snapshot.proto = proto.into();
 

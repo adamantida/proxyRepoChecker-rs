@@ -69,7 +69,8 @@
               "https://raw.githubusercontent.com/10ium/ScrapeAndCategorize/main/output_configs/ShadowSocks.txt",
               "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/v2ray/all_sub.txt",
               "https://raw.githubusercontent.com/Firmfox/Proxify/main/v2ray_configs/seperated_by_protocol/shadowsocks.txt",
-              "https://raw.githubusercontent.com/ebrasha/free-v2ray-public-list/main/V2Ray-Config-By-EbraSha-All-Type.txt"
+              "https://raw.githubusercontent.com/ebrasha/free-v2ray-public-list/main/V2Ray-Config-By-EbraSha-All-Type.txt",
+              "https://raw.githubusercontent.com/morpheusadam/v2ray-config/main/subs/bundles/all.txt"
           ],
     "2":  [
               "https://raw.githubusercontent.com/NiREvil/vless/main/sub/SSTime",
@@ -162,6 +163,16 @@
           ],
     "3":  [
               "https://raw.githubusercontent.com/Epodonios/v2ray-configs/main/All_Configs_Sub.txt",
-              "https://raw.githubusercontent.com/ALIILAPRO/v2rayNG-Config/main/server.txt"
+              "https://raw.githubusercontent.com/ALIILAPRO/v2rayNG-Config/main/server.txt",
+              "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/main/all/configs.txt",
+              "https://raw.githubusercontent.com/Au1rxx/free-vpn-subscriptions/main/output/v2ray-base64.txt",
+              "https://raw.githubusercontent.com/mrdevmohamed/v2ray-configs/main/All_Configs_Sub.txt",
+              "https://raw.githubusercontent.com/F0rc3Run/F0rc3Run/main/Best-Results/proxies.txt",
+              "https://raw.githubusercontent.com/SonzaiEkkusu/V2RayDumper/refs/heads/main/config.txt",
+              "https://raw.githubusercontent.com/Surfboardv2ray/Proxy-sorter/main/submerge/converted.txt",
+              "https://raw.githubusercontent.com/xsparvin/Submahsanetxsparvin/refs/heads/main/Sub.mahsa.xsparvin",
+              "https://raw.githubusercontent.com/chaishpish/free_server_v2ray/main/@TFMTProto",
+              "https://raw.githubusercontent.com/Idolvpn/Automate-V2ray-Config-Collector/main/configs/mix.txt",
+              "https://raw.githubusercontent.com/morpheusadam/v2ray-config/main/subs/bundles/lite.txt"
           ]
 }

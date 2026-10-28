@@ -4,7 +4,7 @@
 
 **收集、检测，只留下可用代理。**
 
-跨平台 Rust 命令行工具：从订阅和 GeoIP，到 TCP 检测、Xray 速度测试，再到可直接使用的 Clash/mihomo 配置。
+跨平台 Rust 命令行工具：处理订阅和 GeoIP，执行适用的 TCP 检测，并使用 Xray 或 Hysteria 1 核心测速，最终生成可直接使用的 Clash/mihomo 配置。
 
 [![Cross-platform CI](https://img.shields.io/github/actions/workflow/status/adamantida/proxyRepoChecker-rs/cross-platform.yml?label=Cross-platform%20CI)](https://github.com/adamantida/proxyRepoChecker-rs/actions/workflows/cross-platform.yml)
 ![Rust 2021](https://img.shields.io/badge/Rust-2021-orange)
@@ -21,16 +21,18 @@ flowchart LR
     A[订阅与文件] --> B[下载]
     B --> C[解析与去重]
     C --> D[GeoIP 与命名]
-    D --> E[TCP 检测]
-    E --> F[Xray 速度测试]
+    D --> E[TCP 代理检测]
+    E --> F[使用适用核心测速]
     F --> G[文本结果]
     F --> H[Clash / mihomo]
 ```
 
-- 解析 `vless`、`vmess`、`trojan` 和 `shadowsocks` 链接。
+- 解析 VLESS、VMess、Trojan、Shadowsocks（`ss`）、Hysteria 1 和 Hysteria 2 链接；测速与导出受相应核心的实际能力限制。
 - 支持本地文件、单个订阅 URL，以及 JSON 中定义的订阅集合。
 - 中间结果采用原子写入，可在每个阶段后查看。
 - 根据速度阈值筛选代理并生成 Clash/mihomo 配置。
+- 生成 sing-box JSON，并提供不支持配置的报告；使用多个测速目标并可报告中位数和速度范围。
+- 通过 `--check-one FILE` 诊断单个代理链接，包括核心启动、SOCKS 就绪和下载阶段。
 - 支持 Windows、macOS 和 Linux，并按当前系统及架构选择 Xray。
 
 ## 快速开始
@@ -47,6 +49,16 @@ cargo run --release -- --set 3 -n 200 --shuffle
 ```sh
 cargo run -- --help
 ```
+
+使用多个测速目标并导出 sing-box：
+
+```sh
+proxy-rs --file proxies.txt --speed-probes 5 --speed-report speed.json \
+  --singbox sing-box.json --singbox-report sing-box-skipped.json --singbox-check
+proxy-rs --check-one one-proxy.txt
+```
+
+`--singbox-check` 使用已安装的 sing-box CLI（`sing-box check`）验证生成的配置。若程序不在 `PATH` 中，请通过 `--singbox-bin FILE` 指定。测速报告记录每个目标的脱敏结果；来源报告按订阅显示错误原因及唯一、TCP 可达和速度达标节点数。
 
 ### 构建脚本
 
@@ -78,7 +90,7 @@ proxy-rs --url 'https://example.org/sub' --fetch-retries 4 --max-source-bytes 33
 proxy-rs --resume --checkpoint run.checkpoint
 ```
 
-`--resume` 必须同时指定 `--checkpoint FILE`。JSON 来源报告包含每个来源的状态及计数（已获取、有效、重复、TCP 可达、速度达标）；URL 中的凭据、查询参数、fragment 和路径会被隐藏。Checkpoint 保存续跑所需的链接和结果，请将文件保存在私密位置。
+`--resume` 必须同时指定 `--checkpoint FILE`。JSON 来源报告包含各订阅的状态、阶段计数和具体的不支持原因；来源 URL 中的凭据、查询参数、fragment 和路径会被隐藏。Checkpoint 保存续跑所需的链接和结果，请将文件保存在私密位置。
 
 ### 筛选与 JSON 输出
 
@@ -100,6 +112,7 @@ cargo run --release -- --url 'https://example.org/sub' \
 | `good.txt` | 达到 `--min-kb` 速度阈值的代理 |
 | `dead.txt` | 被 TCP、延迟上限或速度检查淘汰的代理；需指定 `--dead` |
 | `clash.yaml` | 指定 `--clash` 且存在符合条件的代理时生成的配置 |
+| `sing-box.json` | 指定 `--singbox` 且存在符合条件的代理时生成的配置 |
 
 可通过 CLI 参数修改输出路径。生成结果和本地日志已从 Git 跟踪中排除。
 
@@ -151,3 +164,7 @@ GitHub Actions 会在 Ubuntu、macOS 和 Windows 上运行检查。另有 Ubuntu
 - USDT：`[填写钱包地址和网络]`
 
 捐赠完全自愿，用于支持和维护 `proxy-rs` 项目。使用本项目无需付费。
+
+## 许可证
+
+本项目依据 [MIT 许可证](LICENSE) 发布。

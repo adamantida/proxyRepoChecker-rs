@@ -47,18 +47,22 @@ pub fn build_stream(
         "mkcp" => "kcp",
         "websocket" => "ws",
         "gun" => "grpc",
+        "http-upgrade" => "httpupgrade",
         other => other,
     };
-    if matches!(network, "http" | "h2" | "h3" | "quic") {
+    if matches!(network, "http" | "h2" | "h3" | "quic" | "masque") {
         return None;
     }
     if !matches!(
         network,
-        "raw" | "ws" | "grpc" | "kcp" | "xhttp" | "httpupgrade"
+        "raw" | "ws" | "grpc" | "kcp" | "xhttp" | "httpupgrade" | "hysteria"
     ) {
         return None;
     }
     if security == "reality" && !matches!(network, "raw" | "xhttp" | "grpc") {
+        return None;
+    }
+    if network == "hysteria" && security != "tls" {
         return None;
     }
 
@@ -206,6 +210,16 @@ pub fn build_stream(
                 return None;
             }
         }
+        "hysteria" => {
+            let mut hs = Map::new();
+            hs.insert("version".into(), json!(2));
+            if let Some(auth) = q(params, "auth") {
+                if !auth.is_empty() {
+                    hs.insert("auth".into(), Value::String(auth.to_string()));
+                }
+            }
+            stream.insert("hysteriaSettings".into(), Value::Object(hs));
+        }
         _ => {}
     }
 
@@ -275,8 +289,10 @@ pub fn ss_settings(address: &str, port: u16, method: &str, password: &str) -> Va
 
 pub fn normalize_ss_method(method: &str) -> String {
     match method.trim().to_ascii_lowercase().as_str() {
-        "chacha20-poly1305" => "chacha20-ietf-poly1305".to_string(),
-        "xchacha20-poly1305" => "xchacha20-ietf-poly1305".to_string(),
+        "chacha20-poly1305" | "aead_chacha20_poly1305" => "chacha20-ietf-poly1305".to_string(),
+        "xchacha20-poly1305" | "aead_xchacha20_poly1305" => "xchacha20-ietf-poly1305".to_string(),
+        "aead_aes_128_gcm" => "aes-128-gcm".to_string(),
+        "aead_aes_256_gcm" => "aes-256-gcm".to_string(),
         other => other.to_string(),
     }
 }
@@ -291,12 +307,47 @@ pub const SS_ALLOWED_METHODS: &[&str] = &[
     "chacha20-ietf-poly1305",
     "xchacha20-poly1305",
     "xchacha20-ietf-poly1305",
+];
+
+/// Additional Shadowsocks ciphers supported by Mihomo export but not by the
+/// bundled Xray speed-check core.
+pub const SS_MIHOMO_ONLY_METHODS: &[&str] = &[
+    "aes-128-ccm",
+    "aes-192-ccm",
+    "aes-256-ccm",
+    "aes-128-cfb",
+    "aes-192-cfb",
+    "aes-256-cfb",
+    "aes-128-ctr",
+    "aes-192-ctr",
+    "aes-256-ctr",
+    "aes-128-gcm-siv",
+    "aes-192-gcm",
+    "aes-256-gcm-siv",
+    "aegis-128l",
+    "aegis-256",
+    "aez-384",
+    "chacha20",
+    "chacha20-ietf",
+    "chacha8-ietf-poly1305",
+    "deoxys-ii-256-128",
+    "lea-128-gcm",
+    "lea-192-gcm",
+    "lea-256-gcm",
     "none",
-    "plain",
+    "rabbit128-poly1305",
+    "rc4-md5",
+    "xchacha20",
 ];
 
 pub fn ss_method_supported(method: &str) -> bool {
-    SS_ALLOWED_METHODS.contains(&method)
+    let method = method.to_ascii_lowercase();
+    SS_ALLOWED_METHODS.contains(&method.as_str())
+        || SS_MIHOMO_ONLY_METHODS.contains(&method.as_str())
+}
+
+pub fn ss_method_supported_by_xray(method: &str) -> bool {
+    SS_ALLOWED_METHODS.contains(&method.to_ascii_lowercase().as_str())
 }
 
 #[cfg(test)]
@@ -344,7 +395,7 @@ mod tests {
 
     #[test]
     fn build_stream_rejects_unsupported_networks_and_reality_transports() {
-        for network in ["http", "h2", "h3", "quic", "unknown"] {
+        for network in ["http", "h2", "h3", "quic", "masque", "unknown"] {
             assert!(build_stream(network, "none", &HashMap::new(), "node.example").is_none());
         }
         for network in ["ws", "httpupgrade", "kcp"] {
@@ -358,6 +409,21 @@ mod tests {
         }
         assert!(build_stream("raw", "reality", &HashMap::new(), "node.example").is_none());
         assert!(build_stream("xhttp", "reality", &HashMap::new(), "node.example").is_none());
+    }
+
+    #[test]
+    fn build_stream_supports_xray_hysteria_transport_only_with_tls() {
+        assert!(build_stream("hysteria", "none", &HashMap::new(), "node.example").is_none());
+        let stream = build_stream(
+            "hysteria",
+            "tls",
+            &params(&[("auth", "secret")]),
+            "node.example",
+        )
+        .unwrap();
+        assert_eq!(stream["network"], "hysteria");
+        assert_eq!(stream["hysteriaSettings"]["version"], 2);
+        assert_eq!(stream["hysteriaSettings"]["auth"], "secret");
     }
 
     #[test]
@@ -556,6 +622,35 @@ mod tests {
     }
 
     #[test]
+    fn build_stream_http_upgrade_alias_and_hysteria_optional_auth_are_covered() {
+        let alias = build_stream(
+            "http-upgrade",
+            "none",
+            &params(&[("path", "/upgrade"), ("host", "front.example")]),
+            "node.example",
+        )
+        .unwrap();
+        assert_eq!(alias["network"], "httpupgrade");
+        assert_eq!(
+            alias["httpupgradeSettings"],
+            json!({"path": "/upgrade", "host": "front.example"})
+        );
+
+        let no_auth = build_stream("hysteria", "tls", &HashMap::new(), "node.example").unwrap();
+        assert_eq!(no_auth["hysteriaSettings"]["version"], 2);
+        assert!(no_auth["hysteriaSettings"].get("auth").is_none());
+        assert!(build_stream("hysteria", "reality", &HashMap::new(), "node.example").is_none());
+    }
+
+    #[test]
+    fn build_stream_omits_empty_hysteria_auth() {
+        let stream =
+            build_stream("hysteria", "tls", &params(&[("auth", "")]), "node.example").unwrap();
+
+        assert!(stream["hysteriaSettings"].get("auth").is_none());
+    }
+
+    #[test]
     fn build_stream_validates_kcp_header_and_finalmask_json() {
         assert!(build_stream(
             "mkcp",
@@ -616,13 +711,7 @@ mod tests {
                 "expected supported method: {method}"
             );
         }
-        for method in [
-            "",
-            "AES-256-GCM",
-            " aes-256-gcm",
-            "chacha20-poly1305 ",
-            "unknown",
-        ] {
+        for method in ["", " aes-256-gcm", "chacha20-poly1305 ", "unknown"] {
             assert!(
                 !ss_method_supported(method),
                 "unexpectedly supported method: {method}"
@@ -631,5 +720,69 @@ mod tests {
         assert!(ss_method_supported(&normalize_ss_method(
             "CHACHA20-POLY1305"
         )));
+    }
+
+    #[test]
+    fn shadowsocks_method_validation_is_case_insensitive_and_rejects_removed_methods() {
+        assert!(ss_method_supported("AES-256-GCM"));
+        assert!(ss_method_supported("2022-BLAKE3-AES-128-GCM"));
+        assert!(!ss_method_supported("plain"));
+    }
+
+    #[test]
+    fn mihomo_only_shadowsocks_ciphers_are_parseable_but_not_xray_speed_checkable() {
+        for method in SS_MIHOMO_ONLY_METHODS {
+            assert!(ss_method_supported(method), "{method}");
+            assert!(!ss_method_supported_by_xray(method), "{method}");
+        }
+        assert!(ss_method_supported("none"));
+        assert!(ss_method_supported("aes-128-cfb"));
+    }
+
+    #[test]
+    fn protocol_settings_helpers_preserve_credentials_and_protocol_defaults() {
+        let vless = vless_settings("vless.example", 443, "uuid", &HashMap::new());
+        assert_eq!(
+            vless,
+            json!({
+                "address": "vless.example",
+                "port": 443,
+                "level": 0,
+                "id": "uuid",
+                "encryption": "none",
+                "flow": ""
+            })
+        );
+
+        let vmess = vmess_settings("vmess.example", 8443, "vmess-id", "chacha20-poly1305");
+        assert_eq!(
+            vmess,
+            json!({
+                "address": "vmess.example",
+                "port": 8443,
+                "level": 0,
+                "id": "vmess-id",
+                "security": "chacha20-poly1305",
+                "experiments": ""
+            })
+        );
+
+        let trojan = trojan_settings("trojan.example", 443, "p@ss", &HashMap::new());
+        assert_eq!(trojan["password"], "p@ss");
+        assert_eq!(trojan["flow"], "");
+
+        let shadowsocks = ss_settings("ss.example", 8388, "aes-256-gcm", "s:ecret");
+        assert_eq!(shadowsocks["method"], "aes-256-gcm");
+        assert_eq!(shadowsocks["password"], "s:ecret");
+        assert_eq!(shadowsocks["uot"], false);
+        assert_eq!(shadowsocks["uotVersion"], 0);
+    }
+
+    #[test]
+    fn xray_shadowsocks_method_check_is_case_insensitive_but_keeps_its_allowlist() {
+        assert!(ss_method_supported_by_xray("AES-256-GCM"));
+        assert!(ss_method_supported_by_xray("2022-BLAKE3-CHACHA20-POLY1305"));
+        assert!(!ss_method_supported_by_xray("AES-128-CFB"));
+        assert!(!ss_method_supported_by_xray("unknown"));
     }
 }

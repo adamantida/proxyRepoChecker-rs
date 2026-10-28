@@ -4,7 +4,7 @@
 
 **Collect. Check. Keep the proxies that work.**
 
-A cross-platform Rust CLI that takes subscriptions through GeoIP, TCP checks, Xray speed tests, and into ready-to-use Clash/mihomo configuration.
+A cross-platform Rust CLI that processes subscriptions through GeoIP, applicable TCP checks, speed tests using Xray or Hysteria 1, and ready-to-use Clash/mihomo configuration.
 
 [![Cross-platform CI](https://img.shields.io/github/actions/workflow/status/adamantida/proxyRepoChecker-rs/cross-platform.yml?label=Cross-platform%20CI)](https://github.com/adamantida/proxyRepoChecker-rs/actions/workflows/cross-platform.yml)
 ![Rust 2021](https://img.shields.io/badge/Rust-2021-orange)
@@ -21,16 +21,18 @@ flowchart LR
     A[Subscriptions and files] --> B[Fetch]
     B --> C[Parse and deduplicate]
     C --> D[GeoIP and naming]
-    D --> E[TCP check]
-    E --> F[Xray speed test]
+    D --> E[TCP check for TCP proxies]
+    E --> F[Speed test with the applicable core]
     F --> G[Text results]
     F --> H[Clash / mihomo]
 ```
 
-- Processes `vless`, `vmess`, `trojan`, and `shadowsocks` links.
+- Parses VLESS, VMess, Trojan, Shadowsocks (`ss`), Hysteria 1, and Hysteria 2 links; speed checks and export follow the capabilities of the corresponding core.
 - Accepts local files, individual subscription URLs, and JSON source sets.
 - Writes intermediate results atomically so you can inspect each stage.
 - Generates Clash/mihomo configuration from proxies that pass the speed threshold.
+- Generates sing-box JSON with a report for unsupported settings; measures speed across multiple targets and can report the median and spread.
+- Diagnoses a single proxy link with `--check-one FILE`, including core startup, SOCKS readiness, and download.
 - Builds on Windows, macOS, and Linux; Xray is selected for the current OS and architecture.
 
 ## Quick start
@@ -47,6 +49,16 @@ The second command is a short smoke run using a small source set and a 200-proxy
 ```sh
 cargo run -- --help
 ```
+
+To compare multi-target measurements and export sing-box:
+
+```sh
+proxy-rs --file proxies.txt --speed-probes 5 --speed-report speed.json \
+  --singbox sing-box.json --singbox-report sing-box-skipped.json --singbox-check
+proxy-rs --check-one one-proxy.txt
+```
+
+`--singbox-check` validates the generated config with the installed sing-box CLI (`sing-box check`). If the binary is not on `PATH`, pass it with `--singbox-bin FILE`. The speed report includes each target's sanitized result; the source report shows errors and unique, TCP-live, and speed-qualified counts per feed.
 
 ### Build scripts
 
@@ -78,7 +90,7 @@ proxy-rs --url 'https://example.org/sub' --fetch-retries 4 --max-source-bytes 33
 proxy-rs --resume --checkpoint run.checkpoint
 ```
 
-`--resume` requires `--checkpoint FILE`. The JSON source report contains per-source status and counts (fetched, valid, duplicate, TCP-live, speed-qualified); it strips credentials, query, fragment, and path from URLs. Checkpoints contain links and results needed to resume, so keep the file private.
+`--resume` requires `--checkpoint FILE`. The JSON source report contains per-source status, stage counts, and exact unsupported-feature reasons; credentials, query, fragment, and path are stripped from source URLs. Checkpoints contain links and results needed to resume, so keep the file private.
 
 ### Filtering and JSON output
 
@@ -100,6 +112,7 @@ cargo run --release -- --url 'https://example.org/sub' \
 | `good.txt` | Proxies that meet the `--min-kb` threshold |
 | `dead.txt` | Proxies rejected by TCP, ping limits, or speed checks, when `--dead` is set |
 | `clash.yaml` | Clash/mihomo config when `--clash` is set and eligible proxies exist |
+| `sing-box.json` | sing-box config when `--singbox` is set and eligible proxies exist |
 
 Use CLI flags to change output paths. Generated results and local logs are excluded from Git.
 
@@ -151,3 +164,7 @@ Looking for a ready-to-use VPN for everyday browsing? Try **uSphere VPN**, a pai
 - USDT: `[add wallet address and network]`
 
 Donations are voluntary and go toward supporting and developing `proxy-rs`. Using the project does not require payment.
+
+## License
+
+This project is distributed under the [MIT License](LICENSE).

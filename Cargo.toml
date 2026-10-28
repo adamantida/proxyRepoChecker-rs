@@ -1,11 +1,12 @@
 [workspace]
-members = ["proxy-clash"]
+members = ["proxy-clash", "proxy-singbox"]
 resolver = "2"
 
 [package]
 name = "proxy-rs"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 
 [dependencies]
 anyhow = "1"
@@ -16,6 +17,7 @@ futures = "0.3"
 indicatif = "0.17"
 percent-encoding = "2"
 proxy-clash = { path = "proxy-clash" }
+proxy-singbox = { path = "proxy-singbox" }
 rand = "0.8"
 regex = "1"
 reqwest = { version = "0.12", default-features = false, features = ["socks", "rustls-tls", "gzip", "brotli", "http2"] }

@@ -77,11 +77,7 @@ fn maybe_decode(text: &str) -> String {
         return text.to_string();
     }
     let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-    if compact.len() > 64
-        && compact
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '-' | '_'))
-    {
+    if is_encoded_subscription_candidate(&compact) {
         if let Some(bytes) = b64_any(&compact) {
             let decoded = String::from_utf8_lossy(&bytes);
             if decoded.contains("://") {
@@ -90,6 +86,13 @@ fn maybe_decode(text: &str) -> String {
         }
     }
     text.to_string()
+}
+
+fn is_encoded_subscription_candidate(compact: &str) -> bool {
+    compact.len() > 64
+        && compact
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '-' | '_'))
 }
 
 #[cfg(test)]
@@ -135,29 +138,25 @@ pub async fn fetch_all_with_options(urls: &[String], options: &FetchOptions) -> 
             failures: Vec::new(),
         };
     }
-    let client = match build_client(options.insecure_tls) {
+    let client = build_client(options.insecure_tls).map_err(|error| error.to_string());
+    fetch_all_with_client_result(urls, options, client).await
+}
+
+async fn fetch_all_with_client_result(
+    urls: &[String],
+    options: &FetchOptions,
+    client_result: Result<reqwest::Client, String>,
+) -> FetchReport {
+    let client = match client_result {
         Ok(client) => client,
-        Err(error) => {
-            return FetchReport {
-                texts: Vec::new(),
-                successes: Vec::new(),
-                failures: urls
-                    .iter()
-                    .map(|url| FetchFailure {
-                        url: url.clone(),
-                        reason: format!("не удалось создать HTTP-клиент: {error}"),
-                        attempts: 0,
-                    })
-                    .collect(),
-            };
-        }
+        Err(error) => return client_creation_failure_report(urls, &error),
     };
 
     let pb = ProgressBar::new(urls.len() as u64).with_style(
         ProgressStyle::with_template(
             "{spinner:.green} загрузка источников {pos}/{len} [{elapsed_precise}<{eta_precise}]",
         )
-        .unwrap_or_else(|_| ProgressStyle::default_bar()),
+        .expect("built-in fetch progress template is valid"),
     );
 
     let mut effective_options = options.clone();
@@ -206,6 +205,21 @@ pub async fn fetch_all_with_options(urls: &[String], options: &FetchOptions) -> 
     report
 }
 
+fn client_creation_failure_report(urls: &[String], error: &impl std::fmt::Display) -> FetchReport {
+    FetchReport {
+        texts: Vec::new(),
+        successes: Vec::new(),
+        failures: urls
+            .iter()
+            .map(|url| FetchFailure {
+                url: url.clone(),
+                reason: format!("не удалось создать HTTP-клиент: {error}"),
+                attempts: 0,
+            })
+            .collect(),
+    }
+}
+
 fn build_client(insecure_tls: bool) -> Result<reqwest::Client, reqwest::Error> {
     build_client_with_roots(insecure_tls, &[])
 }
@@ -238,6 +252,33 @@ fn build_client_with_roots(
 
 fn is_https_downgrade(previous: &[reqwest::Url], next: &reqwest::Url) -> bool {
     next.scheme() == "http" && previous.iter().any(|url| url.scheme() == "https")
+}
+
+fn retry_limit(requested: usize) -> usize {
+    requested.min(MAX_FETCH_RETRIES)
+}
+
+fn should_retry(attempt: usize, retries: usize) -> bool {
+    attempt < retries
+}
+
+fn retry_delay(attempt: usize) -> Duration {
+    RETRY_BASE_DELAY * (1_u32 << attempt.min(5))
+}
+
+fn response_chunk_exceeds_limit(body_len: usize, chunk_len: usize, limit: usize) -> bool {
+    body_len.saturating_add(chunk_len) > limit
+}
+
+fn max_cache_file_bytes(max_body_bytes: usize) -> usize {
+    max_body_bytes
+        .saturating_mul(6)
+        .saturating_add(4096)
+        .min(MAX_CACHE_FILE_BYTES)
+}
+
+fn cache_read_limit(max_file_bytes: usize) -> u64 {
+    max_file_bytes as u64 + 1
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -277,7 +318,7 @@ async fn fetch_one_with_options(
                 .and_then(|path| read_cache(path, options.max_response_bytes))
         })
         .filter(|entry| entry.body.len() <= options.max_response_bytes);
-    let retries = options.retries.min(MAX_FETCH_RETRIES);
+    let retries = retry_limit(options.retries);
     let mut last_error = None;
 
     for attempt in 0..=retries {
@@ -327,13 +368,12 @@ async fn fetch_one_with_options(
                 });
             }
             Err(error) => {
-                let may_retry = error.retryable && attempt < retries;
+                let may_retry = error.retryable && should_retry(attempt, retries);
                 let mut error = error;
                 error.attempts = attempt + 1;
                 last_error = Some(error);
                 if may_retry {
-                    let multiplier = 1_u32 << attempt.min(5);
-                    tokio::time::sleep(RETRY_BASE_DELAY * multiplier).await;
+                    tokio::time::sleep(retry_delay(attempt)).await;
                     continue;
                 }
                 break;
@@ -341,11 +381,7 @@ async fn fetch_one_with_options(
         }
     }
 
-    let error = last_error.unwrap_or_else(|| AttemptFailure {
-        message: "загрузка не выполнена".into(),
-        retryable: false,
-        attempts: 0,
-    });
+    let error = last_error.expect("the initial fetch attempt always runs");
     if let Some(cached) = cached {
         return Ok(FetchSuccess {
             url: url.to_owned(),
@@ -437,7 +473,7 @@ async fn fetch_attempt(
         retryable: true,
         attempts: 0,
     })? {
-        if body.len().saturating_add(chunk.len()) > options.max_response_bytes {
+        if response_chunk_exceeds_limit(body.len(), chunk.len(), options.max_response_bytes) {
             return Err(AttemptFailure {
                 message: format!("ответ превышает лимит {} байт", options.max_response_bytes),
                 retryable: false,
@@ -469,10 +505,7 @@ fn cache_path(directory: &Path, url: &str) -> PathBuf {
 fn read_cache(path: &Path, max_body_bytes: usize) -> Option<CachedSubscription> {
     use std::io::Read;
 
-    let max_file_bytes = max_body_bytes
-        .saturating_mul(6)
-        .saturating_add(4096)
-        .min(MAX_CACHE_FILE_BYTES);
+    let max_file_bytes = max_cache_file_bytes(max_body_bytes);
     let metadata_len = std::fs::metadata(path).ok()?.len();
     if metadata_len > max_file_bytes as u64 {
         return None;
@@ -480,7 +513,7 @@ fn read_cache(path: &Path, max_body_bytes: usize) -> Option<CachedSubscription> 
     let mut bytes = Vec::new();
     std::fs::File::open(path)
         .ok()?
-        .take(max_file_bytes as u64 + 1)
+        .take(cache_read_limit(max_file_bytes))
         .read_to_end(&mut bytes)
         .ok()?;
     if bytes.len() > max_file_bytes {
@@ -494,15 +527,42 @@ fn read_cache(path: &Path, max_body_bytes: usize) -> Option<CachedSubscription> 
 #[cfg(test)]
 mod tests {
     use super::{
-        build_client, build_client_with_roots, cache_path, fetch_all, fetch_all_with_options,
-        fetch_one, fetch_one_with_options, is_https_downgrade, maybe_decode, read_cache,
+        build_client, build_client_with_roots, cache_path, cache_read_limit, fetch_all,
+        fetch_all_with_client_result, fetch_all_with_options, fetch_one, fetch_one_with_options,
+        is_encoded_subscription_candidate, is_https_downgrade, max_cache_file_bytes, maybe_decode,
+        read_cache, response_chunk_exceeds_limit, retry_delay, retry_limit, should_retry,
         valid_header_value, CachedSubscription, FetchOptions, CACHE_FORMAT_VERSION,
+        MAX_CACHE_FILE_BYTES, MAX_FETCH_RETRIES,
     };
     use base64::Engine;
     use std::io::{Read, Write};
     use std::net::{Shutdown, TcpListener};
     use std::thread;
     use std::time::Duration;
+
+    #[tokio::test]
+    async fn client_creation_failure_is_reported_for_each_subscription_without_attempts() {
+        let urls = vec![
+            "https://one.example/sub".into(),
+            "https://two.example/sub".into(),
+        ];
+
+        let report = fetch_all_with_client_result(
+            &urls,
+            &FetchOptions::default(),
+            Err("fixture builder failure".into()),
+        )
+        .await;
+
+        assert!(report.texts.is_empty());
+        assert!(report.successes.is_empty());
+        assert_eq!(report.failures.len(), urls.len());
+        for (failure, url) in report.failures.iter().zip(urls) {
+            assert_eq!(failure.url, url);
+            assert_eq!(failure.attempts, 0);
+            assert!(failure.reason.contains("fixture builder failure"));
+        }
+    }
 
     fn serve_once(response: &'static [u8]) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -612,6 +672,21 @@ mod tests {
     }
 
     #[test]
+    fn encoded_subscription_candidate_checks_both_length_boundary_and_alphabet() {
+        assert!(!is_encoded_subscription_candidate(&"A".repeat(64)));
+        assert!(is_encoded_subscription_candidate(&"A".repeat(65)));
+        assert!(!is_encoded_subscription_candidate(&format!(
+            "{}!",
+            "A".repeat(64)
+        )));
+
+        let exactly_64 =
+            base64::engine::general_purpose::STANDARD.encode(format!("vless://{}", "x".repeat(40)));
+        assert_eq!(exactly_64.len(), 64);
+        assert_eq!(maybe_decode(&exactly_64), exactly_64);
+    }
+
+    #[test]
     fn redirect_policy_rejects_https_downgrades_but_allows_http_redirects() {
         let https = reqwest::Url::parse("https://example.com/old").unwrap();
         let http = reqwest::Url::parse("http://example.com/new").unwrap();
@@ -622,6 +697,47 @@ mod tests {
             &https_next
         ));
         assert!(!is_https_downgrade(&[], &http));
+        let http_previous = reqwest::Url::parse("http://example.com/old").unwrap();
+        assert!(!is_https_downgrade(
+            std::slice::from_ref(&http_previous),
+            &http
+        ));
+    }
+
+    #[test]
+    fn retry_policy_caps_attempts_and_preserves_exponential_delay_arithmetic() {
+        assert_eq!(retry_limit(0), 0);
+        assert_eq!(retry_limit(2), 2);
+        assert_eq!(retry_limit(MAX_FETCH_RETRIES), MAX_FETCH_RETRIES);
+        assert_eq!(retry_limit(MAX_FETCH_RETRIES + 1), MAX_FETCH_RETRIES);
+        assert_eq!(retry_limit(usize::MAX), MAX_FETCH_RETRIES);
+
+        assert!(!should_retry(0, 0));
+        assert!(should_retry(0, 1));
+        assert!(!should_retry(1, 1));
+
+        assert_eq!(retry_delay(0), Duration::from_millis(200));
+        assert_eq!(retry_delay(1), Duration::from_millis(400));
+        assert_eq!(retry_delay(5), Duration::from_millis(6_400));
+        assert_eq!(retry_delay(6), Duration::from_millis(6_400));
+    }
+
+    #[test]
+    fn cache_size_arithmetic_saturates_caps_and_reads_one_byte_past_limit() {
+        assert_eq!(max_cache_file_bytes(0), 4096);
+        assert_eq!(max_cache_file_bytes(1), 4102);
+        assert_eq!(max_cache_file_bytes(usize::MAX), MAX_CACHE_FILE_BYTES);
+
+        for limit in [0, 1, 4096, MAX_CACHE_FILE_BYTES] {
+            assert_eq!(cache_read_limit(limit), limit as u64 + 1);
+        }
+    }
+
+    #[test]
+    fn response_chunk_limit_accepts_exact_boundary_and_rejects_overflow() {
+        assert!(!response_chunk_exceeds_limit(2, 3, 5));
+        assert!(response_chunk_exceeds_limit(2, 4, 5));
+        assert!(!response_chunk_exceeds_limit(usize::MAX, 1, usize::MAX));
     }
 
     #[test]
@@ -652,6 +768,41 @@ mod tests {
             .set_len((super::MAX_CACHE_FILE_BYTES + 1) as u64)
             .unwrap();
         assert!(read_cache(&path, usize::MAX).is_none());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cache_reader_rechecks_size_after_metadata_for_growing_fifo() {
+        use std::os::unix::fs::FileTypeExt;
+        use std::process::Command;
+
+        let directory = std::env::temp_dir().join(format!(
+            "proxy-rs-fetch-cache-fifo-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("cache.json");
+        let status = Command::new("mkfifo").arg(&path).status().unwrap();
+        assert!(status.success(), "mkfifo failed for {}", path.display());
+        assert!(std::fs::metadata(&path).unwrap().file_type().is_fifo());
+
+        let max_file_bytes = max_cache_file_bytes(0);
+        let writer_path = path.clone();
+        let writer = thread::spawn(move || {
+            let mut fifo = std::fs::OpenOptions::new()
+                .write(true)
+                .open(writer_path)
+                .unwrap();
+            fifo.write_all(&vec![b'x'; max_file_bytes + 1]).unwrap();
+        });
+
+        assert!(read_cache(&path, 0).is_none());
+        writer.join().unwrap();
         std::fs::remove_dir_all(directory).unwrap();
     }
 
@@ -802,6 +953,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fetch_all_reports_local_successes_and_failures_together() {
+        let success =
+            serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+        let failure = serve_once(
+            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+
+        let report = fetch_all_with_options(
+            &[success.clone(), failure.clone()],
+            &FetchOptions {
+                concurrency: 1,
+                retries: 0,
+                ..FetchOptions::default()
+            },
+        )
+        .await;
+
+        assert_eq!(report.texts, ["ok"]);
+        assert_eq!(report.successes.len(), 1);
+        assert_eq!(report.successes[0].url, success);
+        assert_eq!(report.failures.len(), 1);
+        assert_eq!(report.failures[0].url, failure);
+        assert_eq!(report.failures[0].reason, "HTTP 503 Service Unavailable");
+        assert_eq!(report.failures[0].attempts, 1);
+    }
+
+    #[tokio::test]
     async fn fetch_all_collects_failed_urls_with_their_reasons() {
         let url = serve_once(
             b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -876,6 +1054,52 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error, "HTTP 503 Service Unavailable");
+    }
+
+    #[tokio::test]
+    async fn fetch_one_returns_successful_response_text() {
+        let url = serve_once(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhello world",
+        );
+
+        let text = fetch_one(&reqwest::Client::new(), &url, Duration::from_secs(2))
+            .await
+            .unwrap();
+
+        assert_eq!(text, "hello world");
+    }
+
+    #[tokio::test]
+    async fn fetch_succeeds_when_cache_directory_is_not_a_directory() {
+        let cache_dir = std::env::temp_dir().join(format!(
+            "proxy-rs-fetch-cache-file-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&cache_dir, b"regular file, not a directory").unwrap();
+        let url =
+            serve_once(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+
+        let result = fetch_one_with_options(
+            &reqwest::Client::new(),
+            &url,
+            &FetchOptions {
+                retries: 0,
+                cache_dir: Some(cache_dir.clone()),
+                ..FetchOptions::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.text, "ok");
+        assert_eq!(result.cache, super::CacheDisposition::Downloaded);
+        assert!(!cache_path(&cache_dir, &url).exists());
+        std::fs::remove_file(cache_dir).unwrap();
     }
 
     #[tokio::test]
@@ -1179,6 +1403,27 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.text, "12345");
+    }
+
+    #[tokio::test]
+    async fn accepts_chunked_response_whose_body_exactly_matches_the_limit() {
+        let url = serve_once(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n2\r\nab\r\n3\r\ncde\r\n0\r\n\r\n",
+        );
+        let result = fetch_one_with_options(
+            &reqwest::Client::new(),
+            &url,
+            &FetchOptions {
+                max_response_bytes: 5,
+                retries: 0,
+                ..FetchOptions::default()
+            },
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.text, "abcde");
     }
 
     #[tokio::test]

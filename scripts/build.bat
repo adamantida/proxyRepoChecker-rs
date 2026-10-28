@@ -144,7 +144,7 @@ if "%NATIVE%"=="1" set "OUT=%TARGET_ROOT%\release"
 set "BIN=proxy-rs"
 if /i "%P%"=="windows" set "BIN=proxy-rs.exe"
 if not exist "%OUT%\%BIN%" (echo Error: build succeeded but binary is missing: %OUT%\%BIN%.& set /a FAILURES+=1 & exit /b 0)
-echo Success: "%ROOT%\%OUT%\%BIN%"
+echo Success: "%OUT%\%BIN%"
 exit /b 0
 
 :finished

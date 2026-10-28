@@ -1,5 +1,6 @@
 # Rust build output (Cargo.lock is intentionally tracked for this CLI app).
 /target/
+**/target/
 /debug/
 /release/
 **/*.rs.bk
@@ -29,6 +30,7 @@ rustc-ice-*.txt
 *.log
 *.log.*
 *.log-*
+/out/diagnostics/
 
 # Temporary files from atomic writes, editors, and mutation testing.
 *.tmp

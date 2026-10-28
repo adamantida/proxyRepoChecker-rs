@@ -262,7 +262,6 @@ pub async fn ensure_db(path: &Path, url: &str) -> Result<()> {
     }
     let client = reqwest::Client::builder()
         .user_agent(UA)
-        .danger_accept_invalid_certs(true)
         .build()
         .context("reqwest client")?;
     let resp = client
@@ -332,7 +331,7 @@ pub async fn assign_countries(proxies: &mut [Proxy], db: &GeoDb) -> Result<HashM
         indicatif::ProgressStyle::with_template(
             "{spinner:.green} GeoIP резолв {pos}/{len} хостов [{elapsed_precise}<{eta_precise}]",
         )
-        .unwrap_or_else(|_| indicatif::ProgressStyle::default_bar()),
+        .expect("built-in GeoIP progress template is valid"),
     );
     let resolved: HashMap<String, Option<IpAddr>> = stream::iter(hosts)
         .map(|host| {
@@ -615,18 +614,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ensure_db_replaces_invalid_cache_with_a_valid_local_download() {
+        let path = temp_path("invalid-cache");
+        std::fs::write(&path, b"stale invalid cache").unwrap();
+        let (url, server) = serve_once("200 OK", padded_database()).await;
+
+        ensure_db(&path, &url).await.unwrap();
+
+        assert_eq!(GeoDb::open(&path).unwrap().stats(), (1, 1, 0));
+        server.await.unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
     async fn ensure_db_downloads_valid_database_and_reuses_it() {
         let path = temp_path("download");
         let (url, server) = serve_once("200 OK", padded_database()).await;
 
         ensure_db(&path, &url).await.unwrap();
-        server.await.unwrap();
         ensure_db(&path, "http://127.0.0.1:1/unreachable")
             .await
             .unwrap();
 
         assert_eq!(GeoDb::open(&path).unwrap().stats(), (1, 1, 0));
+        server.await.unwrap();
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn ensure_db_rejects_a_self_signed_tls_certificate() {
+        use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
+        use tokio_rustls::TlsAcceptor;
+
+        let generated = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let key =
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(generated.key_pair.serialize_der()));
+        let config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![generated.cert.der().clone()], key)
+            .unwrap();
+        let acceptor = TlsAcceptor::from(std::sync::Arc::new(config));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            assert!(
+                acceptor.accept(stream).await.is_err(),
+                "the server should observe the client's rejection of its certificate"
+            );
+        });
+        let path = temp_path("untrusted-tls");
+        let url = format!("https://localhost:{}/geoip.dat", address.port());
+
+        let error = ensure_db(&path, &url).await.unwrap_err();
+
+        server.await.unwrap();
+        assert!(error.to_string().contains("не удалось скачать"));
+        assert!(!path.exists());
     }
 
     #[tokio::test]
@@ -639,9 +683,8 @@ mod tests {
         let (url, server) = serve_once("200 OK", padded_database()).await;
 
         ensure_db(&path, &url).await.unwrap();
-        server.await.unwrap();
-
         assert_eq!(GeoDb::open(&path).unwrap().stats(), (1, 1, 0));
+        server.await.unwrap();
         std::fs::remove_file(path).unwrap();
     }
 
@@ -760,6 +803,23 @@ mod tests {
     }
 
     #[test]
+    fn iso_lookup_checks_inclusive_ipv4_and_ipv6_range_boundaries_and_gaps() {
+        let network_v6: Ipv6Addr = "2001:db8:abcd::".parse().unwrap();
+        let db = GeoDb::parse(&database(&[
+            entry("V4", &[(&[192, 0, 2, 0], 24)]),
+            entry("V6", &[(network_v6.octets().as_slice(), 120)]),
+        ]))
+        .unwrap();
+
+        assert_eq!(db.iso_for("192.0.2.0".parse().unwrap()), Some("V4"));
+        assert_eq!(db.iso_for("192.0.2.255".parse().unwrap()), Some("V4"));
+        assert_eq!(db.iso_for("192.0.3.0".parse().unwrap()), None);
+        assert_eq!(db.iso_for("2001:db8:abcd::".parse().unwrap()), Some("V6"));
+        assert_eq!(db.iso_for("2001:db8:abcd::ff".parse().unwrap()), Some("V6"));
+        assert_eq!(db.iso_for("2001:db8:abcd::100".parse().unwrap()), None);
+    }
+
+    #[test]
     fn parse_accepts_default_routes_and_skips_invalid_address_width_or_prefix() {
         let bytes = database(&[entry(
             "ALL",
@@ -859,6 +919,23 @@ mod tests {
         assert_eq!(proxies[2].display, "[DE] - 001");
         assert_eq!(proxies[3].display, "[XX] - 001");
         assert_eq!(proxies[4].display, "[XX] - 002");
+    }
+
+    #[tokio::test]
+    async fn assign_countries_keeps_local_ip_unassigned_even_if_database_has_a_country() {
+        let db = GeoDb::parse(&database(&[
+            entry("PRIVATE", &[(&[192, 168, 1, 0], 24)]),
+            entry("PUBLIC", &[(&[8, 8, 8, 0], 24)]),
+        ]))
+        .unwrap();
+        let mut proxies = vec![proxy("192.168.1.10"), proxy("8.8.8.8")];
+
+        let counts = assign_countries(&mut proxies, &db).await.unwrap();
+
+        assert_eq!(counts.get("XX"), Some(&1));
+        assert_eq!(counts.get("PUBLIC"), Some(&1));
+        assert_eq!(proxies[0].country, "XX");
+        assert_eq!(proxies[1].country, "PUBLIC");
     }
 
     #[tokio::test]

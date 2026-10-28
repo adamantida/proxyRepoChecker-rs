@@ -7,6 +7,7 @@ use futures::stream::{self, StreamExt};
 use indicatif::{ProgressBar, ProgressStyle};
 use regex::Regex;
 use serde_json::{json, Value};
+use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -128,7 +129,7 @@ pub async fn ensure_core(path: &Path, url: Option<&str>, no_download: bool) -> R
         ProgressStyle::with_template(
             "{spinner:.green} xray {bytes}/{total_bytes} [{elapsed_precise}<{eta_precise}] {binary_bytes_per_sec}",
         )
-        .unwrap_or_else(|_| ProgressStyle::default_bar()),
+        .expect("built-in Xray progress template is valid"),
     );
 
     let mut resp = resp;
@@ -186,10 +187,14 @@ pub struct SpeedOpts {
     pub timeout_s: f64,
     pub max_mb: f64,
     pub min_kb: f64,
+    pub speed_probes: usize,
 }
 
 pub struct Checker {
     core: PathBuf,
+    hysteria1_core: PathBuf,
+    no_hysteria1_download: bool,
+    hysteria1_core_ready: tokio::sync::OnceCell<std::result::Result<(), String>>,
     work: PathBuf,
     speed_threads: usize,
     start_timeout: Duration,
@@ -197,6 +202,27 @@ pub struct Checker {
     next: AtomicU16,
     bad_re: Regex,
     bad_outbounds: AtomicUsize,
+    bad_outbound_rejections: Mutex<HashMap<String, &'static str>>,
+    speed_unchecked: Mutex<HashSet<String>>,
+    speed_measurements: Mutex<HashMap<String, speed::MeasurementSummary>>,
+    speed_probe_results: Mutex<HashMap<String, Vec<speed::ProbeResult>>>,
+}
+
+fn bad_outbound_error_kind(log: &str) -> &'static str {
+    let log = log.to_ascii_lowercase();
+    if log.contains("unknown field") {
+        "unknown_config_field"
+    } else if log.contains("unknown protocol") || log.contains("protocol not found") {
+        "unknown_protocol"
+    } else if log.contains("unsupported") || log.contains("not supported") {
+        "unsupported_feature"
+    } else if log.contains("missing") || log.contains("required") {
+        "missing_config_value"
+    } else if log.contains("invalid") || log.contains("failed to parse") {
+        "invalid_config_value"
+    } else {
+        "config_rejected"
+    }
 }
 
 struct BatchConfig(PathBuf);
@@ -227,14 +253,208 @@ impl Drop for ReporterTask {
 }
 
 async fn port_open(port: u16) -> bool {
+    port_open_with(port, |port| async move {
+        tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .is_ok()
+    })
+    .await
+}
+
+async fn port_open_with<F, Fut>(port: u16, probe: F) -> bool
+where
+    F: FnOnce(u16) -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    tokio::time::timeout(Duration::from_millis(250), probe(port))
+        .await
+        .unwrap_or(false)
+}
+
+fn startup_deadline_reached(now: Instant, deadline: Instant) -> bool {
+    now >= deadline
+}
+
+fn speed_meets_minimum(speed_kbs: f64, min_kb: f64) -> bool {
+    speed_kbs + f64::EPSILON >= min_kb
+}
+
+fn supported_by_xray_speed_core(proxy: &Proxy) -> bool {
+    (proxy.proto != "hysteria"
+        && !(proxy.proto == "hysteria2" && proxy.settings["obfs"] == "gecko"))
+        && (proxy.proto != "shadowsocks"
+            || proxy.settings["method"]
+                .as_str()
+                .is_some_and(crate::outbound::ss_method_supported_by_xray))
+}
+
+pub(super) fn diagnose_supported(proxy: &Proxy) -> bool {
     matches!(
-        tokio::time::timeout(
-            Duration::from_millis(250),
-            tokio::net::TcpStream::connect(("127.0.0.1", port))
+        proxy.proto,
+        "vless" | "vmess" | "trojan" | "shadowsocks" | "hysteria2"
+    ) && supported_by_xray_speed_core(proxy)
+}
+
+pub(super) async fn diagnose_runtime(
+    proxy: Proxy,
+    options: crate::diagnose::DiagnosticOptions,
+    mut report: crate::diagnose::DiagnosticReport,
+) -> crate::diagnose::DiagnosticReport {
+    let checker = Checker {
+        core: options.core.clone(),
+        hysteria1_core: options
+            .hysteria1_core
+            .clone()
+            .unwrap_or_else(|| crate::hysteria1::default_core_path_next_to(&options.core)),
+        no_hysteria1_download: options.no_hysteria1_download,
+        hysteria1_core_ready: tokio::sync::OnceCell::new(),
+        work: options.workdir.clone(),
+        speed_threads: 1,
+        start_timeout: options.start_timeout.max(Duration::from_millis(1)),
+        base_port: options.base_port,
+        next: AtomicU16::new(options.base_port),
+        bad_re: Regex::new(
+            r#"(?i)failed to build outbound config with tag\s*[:=]?\s*["']?(out_\d+)"#,
         )
-        .await,
-        Ok(Ok(_))
+        .expect("built-in Xray error regex is valid"),
+        bad_outbounds: AtomicUsize::new(0),
+        bad_outbound_rejections: Mutex::new(HashMap::new()),
+        speed_unchecked: Mutex::new(HashSet::new()),
+        speed_measurements: Mutex::new(HashMap::new()),
+        speed_probe_results: Mutex::new(HashMap::new()),
+    };
+    let port = checker.alloc_port().await;
+    let config = checker.build_config(&[(proxy, port)]);
+    let config_path = checker.work.join(format!("diagnose_{port}.json"));
+    let _cleanup = BatchConfig(config_path.clone());
+    let serialized = match serde_json::to_vec(&config) {
+        Ok(serialized) => serialized,
+        Err(error) => {
+            report.failure = Some(crate::diagnose::DiagnosticFailure::RuntimeStart(format!(
+                "serialize Xray config: {error}"
+            )));
+            return report;
+        }
+    };
+    if let Err(error) = std::fs::write(&config_path, serialized) {
+        report.failure = Some(crate::diagnose::DiagnosticFailure::RuntimeStart(format!(
+            "write Xray config {}: {error}",
+            config_path.display()
+        )));
+        return report;
+    }
+
+    let mut command = tokio::process::Command::new(&checker.core);
+    command
+        .arg("run")
+        .arg("-c")
+        .arg(&config_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            report.failure = Some(crate::diagnose::DiagnosticFailure::RuntimeStart(format!(
+                "start Xray core {}: {error}",
+                checker.core.display()
+            )));
+            return report;
+        }
+    };
+    report.core_started = Some(true);
+
+    let deadline = Instant::now() + checker.start_timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                report.failure = Some(crate::diagnose::DiagnosticFailure::RuntimeExited(format!(
+                    "Xray core exited before SOCKS became ready ({status})"
+                )));
+                return report;
+            }
+            Err(error) => {
+                report.failure = Some(crate::diagnose::DiagnosticFailure::RuntimeExited(format!(
+                    "wait for Xray core: {error}"
+                )));
+                let _ = child.kill().await;
+                return report;
+            }
+            Ok(None) => {}
+        }
+        match socks5_handshake(port).await {
+            Ok(()) => {
+                report.socks_ready = Some(true);
+                break;
+            }
+            Err(reason) if Instant::now() >= deadline => {
+                report.failure = Some(if reason.contains("timed out") {
+                    crate::diagnose::DiagnosticFailure::StartupTimeout
+                } else {
+                    crate::diagnose::DiagnosticFailure::SocksNotReady(reason)
+                });
+                let _ = child.kill().await;
+                return report;
+            }
+            Err(_) => {}
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let opts = options.speed_opts();
+    let measurement = speed::measure_detailed(
+        port,
+        opts.primary.as_deref(),
+        opts.connect_timeout_s,
+        opts.timeout_s,
+        opts.max_mb,
+        opts.speed_probes,
     )
+    .await;
+    report.download_succeeded = Some(measurement.successful_probes > 0);
+    report.speed_median_kbs = Some(measurement.median_kbs);
+    report.measurement = Some(measurement.into());
+    if measurement.successful_probes == 0 {
+        report.failure = Some(crate::diagnose::DiagnosticFailure::DownloadFailed);
+    } else if !speed_meets_minimum(measurement.median_kbs, opts.min_kb) {
+        report.failure = Some(crate::diagnose::DiagnosticFailure::BelowMinimum {
+            measured_kbs: measurement.median_kbs,
+            minimum_kbs: opts.min_kb,
+        });
+    }
+    let _ = child.kill().await;
+    report
+}
+
+async fn socks5_handshake(port: u16) -> std::result::Result<(), String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let address = format!("127.0.0.1:{port}");
+    let operation = async {
+        let mut stream = tokio::net::TcpStream::connect(&address)
+            .await
+            .map_err(|error| format!("connect to local SOCKS listener: {error}"))?;
+        stream
+            .write_all(&[5, 1, 0])
+            .await
+            .map_err(|error| format!("send SOCKS5 greeting: {error}"))?;
+        let mut response = [0; 2];
+        stream
+            .read_exact(&mut response)
+            .await
+            .map_err(|error| format!("read SOCKS5 greeting response: {error}"))?;
+        if response != [5, 0] {
+            return Err(format!("SOCKS5 rejected no-auth greeting: {response:?}"));
+        }
+        Ok(())
+    };
+    tokio::time::timeout(Duration::from_millis(300), operation)
+        .await
+        .map_err(|_| "SOCKS5 handshake timed out".to_string())?
 }
 
 async fn read_output(child: tokio::process::Child) -> String {
@@ -253,6 +473,16 @@ fn format_read_output(output: std::io::Result<std::process::Output>) -> String {
 }
 
 impl Checker {
+    /// Detailed speed results collected by the regular pipeline, keyed by
+    /// `Proxy::key()`. Entries are recorded even when every probe fails.
+    pub fn speed_measurements(&self) -> HashMap<String, speed::MeasurementSummary> {
+        self.speed_measurements.lock().unwrap().clone()
+    }
+
+    pub fn speed_probe_results(&self) -> HashMap<String, Vec<speed::ProbeResult>> {
+        self.speed_probe_results.lock().unwrap().clone()
+    }
+
     pub fn new(cli: &Cli) -> Result<Arc<Self>> {
         let core = PathBuf::from(&cli.core);
         if !core.exists() {
@@ -262,6 +492,9 @@ impl Checker {
         std::fs::create_dir_all(&work)
             .with_context(|| format!("не удалось создать {}", work.display()))?;
         Ok(Arc::new(Self {
+            hysteria1_core: crate::hysteria1::default_core_path_next_to(&core),
+            no_hysteria1_download: cli.no_hysteria1_download,
+            hysteria1_core_ready: tokio::sync::OnceCell::new(),
             core,
             work,
             speed_threads: cli.speed_threads.max(1),
@@ -273,6 +506,10 @@ impl Checker {
             )
             .unwrap(),
             bad_outbounds: AtomicUsize::new(0),
+            bad_outbound_rejections: Mutex::new(HashMap::new()),
+            speed_unchecked: Mutex::new(HashSet::new()),
+            speed_measurements: Mutex::new(HashMap::new()),
+            speed_probe_results: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -281,8 +518,84 @@ impl Checker {
         self.bad_outbounds.load(Ordering::Relaxed)
     }
 
+    /// Proxy keys whose Xray outbound configuration was rejected before probing.
+    pub fn bad_outbound_rejections(&self) -> HashMap<String, &'static str> {
+        self.bad_outbound_rejections.lock().unwrap().clone()
+    }
+
+    pub fn speed_unchecked_keys(&self) -> HashSet<String> {
+        self.speed_unchecked.lock().unwrap().clone()
+    }
+
     async fn alloc_port(&self) -> u16 {
         self.alloc_port_with(port_open).await
+    }
+
+    async fn ensure_hysteria1_core(&self) -> std::result::Result<(), String> {
+        self.hysteria1_core_ready
+            .get_or_init(|| async {
+                crate::hysteria1::ensure_core(&self.hysteria1_core, self.no_hysteria1_download)
+                    .await
+                    .map_err(|error| format!("{error:#}"))
+            })
+            .await
+            .clone()
+    }
+
+    async fn run_hysteria1_stage(
+        self: &Arc<Self>,
+        proxies: Vec<Proxy>,
+        opts: SpeedOpts,
+        pb: ProgressBar,
+    ) -> Vec<Proxy> {
+        if proxies.is_empty() {
+            return Vec::new();
+        }
+        if let Err(error) = self.ensure_hysteria1_core().await {
+            eprintln!("[предупреждение] проверка Hysteria 1 пропущена: {error}");
+            self.speed_unchecked
+                .lock()
+                .unwrap()
+                .extend(proxies.iter().map(Proxy::key));
+            pb.inc(proxies.len() as u64);
+            return Vec::new();
+        }
+
+        let concurrency = self.speed_threads.max(1);
+        stream::iter(proxies)
+            .map(|mut proxy| {
+                let this = Arc::clone(self);
+                let opts = opts.clone();
+                let pb = pb.clone();
+                async move {
+                    let port = this.alloc_port().await;
+                    let outcome = crate::hysteria1::check_proxy_with_probes(
+                        &this.hysteria1_core,
+                        &this.work,
+                        &proxy,
+                        port,
+                        &opts,
+                    )
+                    .await
+                    .unwrap_or_default();
+                    proxy.speed_kbs = outcome.measurement.median_kbs;
+                    let key = proxy.key();
+                    this.speed_measurements
+                        .lock()
+                        .unwrap()
+                        .insert(key.clone(), outcome.measurement);
+                    this.speed_probe_results
+                        .lock()
+                        .unwrap()
+                        .insert(key, outcome.probes);
+                    pb.inc(1);
+                    speed_meets_minimum(proxy.speed_kbs, opts.min_kb).then_some(proxy)
+                }
+            })
+            .buffer_unordered(concurrency)
+            .filter_map(|proxy| async move { proxy })
+            .collect()
+            .await
     }
 
     async fn alloc_port_with<F, Fut>(&self, is_open: F) -> u16
@@ -329,7 +642,12 @@ impl Checker {
                 "settings": {"udp": false}
             }));
             let mut outbound = json!({
-                "protocol": p.proto,
+                "protocol": if p.proto == "hysteria2" {
+                    // Xray calls its Hysteria 2 outbound simply `hysteria`.
+                    "hysteria"
+                } else {
+                    p.proto
+                },
                 "tag": out_tag,
                 "settings": p.settings
             });
@@ -469,6 +787,41 @@ impl Checker {
             if items.is_empty() {
                 return Vec::new();
             }
+            let hysteria1_items: Vec<Proxy> = items
+                .iter()
+                .filter(|proxy| proxy.proto == "hysteria")
+                .cloned()
+                .collect();
+            let unsupported = items
+                .iter()
+                .filter(|proxy| proxy.proto != "hysteria" && !supported_by_xray_speed_core(proxy))
+                .count() as u64;
+            if unsupported > 0 {
+                this.speed_unchecked.lock().unwrap().extend(
+                    items
+                        .iter()
+                        .filter(|proxy| {
+                            proxy.proto != "hysteria" && !supported_by_xray_speed_core(proxy)
+                        })
+                        .map(Proxy::key),
+                );
+            }
+            let hysteria1_good = this
+                .run_hysteria1_stage(hysteria1_items, opts.clone(), pb.clone())
+                .await;
+            if unsupported > 0 {
+                eprintln!(
+                    "[предупреждение] Xray пропускает speed-check для {unsupported} прокси с неподдерживаемым Xray транспортом или методом Shadowsocks"
+                );
+                pb.inc(unsupported);
+            }
+            let items: Vec<Proxy> = items
+                .into_iter()
+                .filter(|proxy| proxy.proto != "hysteria" && supported_by_xray_speed_core(proxy))
+                .collect();
+            if items.is_empty() {
+                return hysteria1_good;
+            }
             let total_items = items.len() as u64;
             let mut mapping: Vec<(Proxy, u16)> = Vec::with_capacity(items.len());
             for p in items {
@@ -484,13 +837,13 @@ impl Checker {
                 Err(e) => {
                     eprintln!("[ошибка] сериализация batch-конфига: {e}");
                     pb.inc(total_items);
-                    return Vec::new();
+                    return hysteria1_good;
                 }
             };
             if let Err(e) = std::fs::write(&cfg_path, bytes) {
                 eprintln!("[ошибка] запись {}: {e}", cfg_path.display());
                 pb.inc(total_items);
-                return Vec::new();
+                return hysteria1_good;
             }
 
             let mut cmd = tokio::process::Command::new(&this.core);
@@ -511,7 +864,7 @@ impl Checker {
                 Err(e) => {
                     eprintln!("[ошибка] не удалось запустить ядро: {e}");
                     pb.inc(total_items);
-                    return Vec::new();
+                    return hysteria1_good;
                 }
             };
 
@@ -522,20 +875,24 @@ impl Checker {
                 match child.try_wait() {
                     Ok(Some(_)) => {
                         let text = read_output(child).await;
-                        return Checker::handle_failure(&this, &text, mapping, opts, pb.clone())
-                            .await;
+                        let mut passed =
+                            Checker::handle_failure(&this, &text, mapping, opts, pb.clone()).await;
+                        passed.extend(hysteria1_good);
+                        return passed;
                     }
                     Ok(None) => {}
                     Err(e) => {
-                        return Checker::handle_wait_error(e, child, cfg_path, total_items, pb)
-                            .await;
+                        let mut passed =
+                            Checker::handle_wait_error(e, child, cfg_path, total_items, pb).await;
+                        passed.extend(hysteria1_good);
+                        return passed;
                     }
                 }
                 if port_open(first_port).await {
                     started = true;
                     break;
                 }
-                if Instant::now() >= deadline {
+                if startup_deadline_reached(Instant::now(), deadline) {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -544,7 +901,10 @@ impl Checker {
             if !started {
                 let _ = child.kill().await;
                 let text = read_output(child).await;
-                return Checker::handle_failure(&this, &text, mapping, opts, pb.clone()).await;
+                let mut passed =
+                    Checker::handle_failure(&this, &text, mapping, opts, pb.clone()).await;
+                passed.extend(hysteria1_good);
+                return passed;
             }
 
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -554,17 +914,27 @@ impl Checker {
                 .map(|(p, port)| {
                     let opts = opts.clone();
                     let pb = pb.clone();
+                    let this = Arc::clone(&this);
                     async move {
-                        let kbs = speed::measure(
+                        let probes = speed::measure_detailed_probes(
                             port,
                             opts.primary.as_deref(),
                             opts.connect_timeout_s,
                             opts.timeout_s,
                             opts.max_mb,
+                            opts.speed_probes,
                         )
                         .await;
+                        let measurement = speed::summarize_probe_results(&probes);
                         pb.inc(1);
-                        if kbs + f64::EPSILON >= opts.min_kb {
+                        let kbs = measurement.median_kbs;
+                        let key = p.key();
+                        this.speed_measurements
+                            .lock()
+                            .unwrap()
+                            .insert(key.clone(), measurement);
+                        this.speed_probe_results.lock().unwrap().insert(key, probes);
+                        if speed_meets_minimum(kbs, opts.min_kb) {
                             let mut p = p;
                             p.speed_kbs = kbs;
                             Some(p)
@@ -579,7 +949,9 @@ impl Checker {
                 .await;
 
             let _ = child.kill().await;
-            results
+            let mut passed = results;
+            passed.extend(hysteria1_good);
+            passed
         })
     }
 
@@ -609,6 +981,10 @@ impl Checker {
             if let Ok(port) = tag.trim_start_matches("out_").parse::<u16>() {
                 if let Some(pos) = mapping.iter().position(|(_, p)| *p == port) {
                     this.bad_outbounds.fetch_add(1, Ordering::Relaxed);
+                    this.bad_outbound_rejections
+                        .lock()
+                        .unwrap()
+                        .insert(mapping[pos].0.key(), bad_outbound_error_kind(log));
                     pb.inc(1);
                     let mut rest = mapping;
                     rest.remove(pos);
@@ -821,6 +1197,11 @@ mod tests {
     }
 
     #[test]
+    fn formats_negative_duration_as_zero() {
+        assert_eq!(fmt_hms(-1.0), "00:00:00");
+    }
+
+    #[test]
     fn progress_line_has_counts_and_eta() {
         let line = progress_line(50, 100, 10.0, 3);
         assert!(line.starts_with("[ 50/100]"), "{line}");
@@ -864,6 +1245,9 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         drop(listener);
         Arc::new(Checker {
+            hysteria1_core: PathBuf::new(),
+            no_hysteria1_download: true,
+            hysteria1_core_ready: tokio::sync::OnceCell::new(),
             core,
             work,
             speed_threads: 1,
@@ -875,6 +1259,10 @@ mod tests {
             )
             .unwrap(),
             bad_outbounds: AtomicUsize::new(0),
+            bad_outbound_rejections: Mutex::new(HashMap::new()),
+            speed_unchecked: Mutex::new(HashSet::new()),
+            speed_measurements: Mutex::new(HashMap::new()),
+            speed_probe_results: Mutex::new(HashMap::new()),
         })
     }
 
@@ -885,7 +1273,26 @@ mod tests {
             timeout_s: 1.0,
             max_mb: 1.0,
             min_kb: 0.0,
+            speed_probes: 1,
         }
+    }
+
+    #[tokio::test]
+    async fn alloc_port_skips_a_port_held_by_another_process() {
+        let occupied = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let occupied_port = occupied.local_addr().unwrap().port();
+        let dir = TestDir::new();
+        let checker = test_checker(
+            dir.path("missing-xray"),
+            dir.path("work"),
+            Duration::from_secs(1),
+        );
+        checker.next.store(occupied_port, Ordering::Relaxed);
+
+        let allocated = checker.alloc_port_with(|_| async { false }).await;
+
+        assert_ne!(allocated, occupied_port);
+        assert!(std::net::TcpListener::bind(("127.0.0.1", allocated)).is_ok());
     }
 
     #[test]
@@ -897,6 +1304,14 @@ mod tests {
         assert_eq!(core_bin_name_for("windows"), "xray.exe");
         assert_eq!(core_bin_name_for("linux"), "xray");
         assert_eq!(core_bin_name_for("macos"), "xray");
+    }
+
+    #[test]
+    fn core_name_for_platform_is_exact_for_windows_and_unix() {
+        assert_eq!(core_bin_name_for("windows"), "xray.exe");
+        for os in ["linux", "macos", "freebsd", "unknown"] {
+            assert_eq!(core_bin_name_for(os), "xray", "unexpected name for {os}");
+        }
     }
 
     #[test]
@@ -923,6 +1338,13 @@ mod tests {
     }
 
     #[test]
+    fn current_platform_download_url_names_the_exact_supported_asset() {
+        let expected = asset_name_for(std::env::consts::OS, std::env::consts::ARCH).unwrap();
+        let url = default_xray_url().unwrap();
+        assert!(url.ends_with(expected), "unexpected Xray asset URL: {url}");
+    }
+
+    #[test]
     fn rejects_unsupported_platform_assets_with_platform_name() {
         let error = asset_name_for("freebsd", "x86_64").unwrap_err();
         assert!(error.to_string().contains("freebsd/x86_64"));
@@ -936,6 +1358,154 @@ mod tests {
         let small = dir.path("small-xray");
         std::fs::write(&small, vec![0; 1024]).unwrap();
         assert!(!valid_core(&small));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn valid_core_rejects_file_at_the_exact_minimum_size() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TestDir::new();
+        let path = dir.path("exactly-minimum-xray");
+        let mut script = "#!/bin/sh\necho Xray version fixture\n".to_string();
+        script.push_str(&"#".repeat(1_000_000 - script.len()));
+        std::fs::write(&path, script).unwrap();
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&path, permissions).unwrap();
+
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 1_000_000);
+        assert!(!valid_core(&path));
+    }
+
+    #[tokio::test]
+    async fn port_open_probe_handles_open_closed_and_timed_out_checks() {
+        assert!(port_open_with(443, |_| async { true }).await);
+        assert!(!port_open_with(443, |_| async { false }).await);
+        assert!(!port_open_with(443, |_| async { std::future::pending::<bool>().await }).await);
+
+        // Port zero is reserved and cannot accept a TCP connection.
+        assert!(!port_open(0).await);
+    }
+
+    #[test]
+    fn startup_deadline_is_reached_at_equality_only_after_the_boundary() {
+        let now = Instant::now();
+        let deadline = now + Duration::from_secs(1);
+        assert!(!startup_deadline_reached(
+            deadline - Duration::from_nanos(1),
+            deadline
+        ));
+        assert!(startup_deadline_reached(deadline, deadline));
+        assert!(startup_deadline_reached(
+            deadline + Duration::from_nanos(1),
+            deadline
+        ));
+    }
+
+    #[test]
+    fn speed_minimum_accepts_exact_threshold_and_one_epsilon_below() {
+        assert!(speed_meets_minimum(1.0, 1.0));
+        assert!(speed_meets_minimum(1.0 - f64::EPSILON, 1.0));
+        assert!(!speed_meets_minimum(1.0 - 2.0 * f64::EPSILON, 1.0));
+    }
+
+    #[test]
+    fn xray_speed_eligibility_excludes_only_unsupported_hysteria_variants() {
+        let mut hysteria1 = sample_proxy();
+        hysteria1.proto = "hysteria";
+        assert!(!supported_by_xray_speed_core(&hysteria1));
+
+        let mut hysteria2 = sample_proxy();
+        hysteria2.proto = "hysteria2";
+        hysteria2.settings["obfs"] = json!("salamander");
+        assert!(supported_by_xray_speed_core(&hysteria2));
+        hysteria2.settings["obfs"] = json!("gecko");
+        assert!(!supported_by_xray_speed_core(&hysteria2));
+
+        let mut old_shadowsocks = sample_proxy();
+        old_shadowsocks.proto = "shadowsocks";
+        old_shadowsocks.settings["method"] = json!("aes-128-cfb");
+        assert!(!supported_by_xray_speed_core(&old_shadowsocks));
+        old_shadowsocks.settings["method"] = json!("aes-256-gcm");
+        assert!(supported_by_xray_speed_core(&old_shadowsocks));
+
+        let vmess = sample_proxy();
+        assert!(supported_by_xray_speed_core(&vmess));
+    }
+
+    #[test]
+    fn xray_speed_eligibility_handles_missing_and_non_string_shadowsocks_methods() {
+        let mut shadowsocks = sample_proxy();
+        shadowsocks.proto = "shadowsocks";
+        shadowsocks.settings = json!({});
+        assert!(!supported_by_xray_speed_core(&shadowsocks));
+
+        shadowsocks.settings["method"] = json!(42);
+        assert!(!supported_by_xray_speed_core(&shadowsocks));
+
+        shadowsocks.settings["method"] = json!("chacha20-poly1305");
+        assert!(supported_by_xray_speed_core(&shadowsocks));
+
+        let mut unknown = sample_proxy();
+        unknown.proto = "future-protocol";
+        assert!(supported_by_xray_speed_core(&unknown));
+    }
+
+    #[test]
+    fn build_config_preserves_supported_proxy_protocols_and_their_settings() {
+        let dir = TestDir::new();
+        let checker = test_checker(
+            dir.path("unused-xray"),
+            dir.path("work"),
+            Duration::from_secs(1),
+        );
+        let cases = [
+            ("vless", "vless", json!({"id":"vless-id"})),
+            ("vmess", "vmess", json!({"id":"vmess-id"})),
+            (
+                "shadowsocks",
+                "shadowsocks",
+                json!({"method":"aes-256-gcm","password":"ss-secret"}),
+            ),
+            ("trojan", "trojan", json!({"password":"trojan-secret"})),
+            (
+                "hysteria2",
+                "hysteria",
+                json!({"version":2,"address":"hy.example","port":443}),
+            ),
+        ];
+        let mapping: Vec<_> = cases
+            .iter()
+            .enumerate()
+            .map(|(index, (proto, _, settings))| {
+                let mut proxy = sample_proxy();
+                proxy.proto = proto;
+                proxy.settings = settings.clone();
+                proxy.stream = Some(json!({"network":"test-transport"}));
+                (proxy, 13000 + index as u16)
+            })
+            .collect();
+
+        let config = checker.build_config(&mapping);
+
+        assert_eq!(config["inbounds"].as_array().unwrap().len(), cases.len());
+        assert_eq!(config["outbounds"].as_array().unwrap().len(), cases.len());
+        assert_eq!(
+            config["routing"]["rules"].as_array().unwrap().len(),
+            cases.len()
+        );
+        for (index, (_, expected_proto, expected_settings)) in cases.iter().enumerate() {
+            let outbound = &config["outbounds"][index];
+            assert_eq!(outbound["protocol"], *expected_proto);
+            assert_eq!(outbound["settings"], *expected_settings);
+            assert_eq!(outbound["streamSettings"]["network"], "test-transport");
+            assert_eq!(outbound["tag"], format!("out_{}", 13000 + index));
+            assert_eq!(
+                config["routing"]["rules"][index]["outboundTag"],
+                format!("out_{}", 13000 + index)
+            );
+        }
     }
 
     #[cfg(unix)]
@@ -1047,6 +1617,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ensure_core_checks_downloaded_archive_size_at_the_exact_boundary() {
+        let dir = TestDir::new();
+
+        let under_boundary = dir.path("under-boundary/xray");
+        let (url, server) = serve_once("200 OK", vec![b'Z'; 999_999]).await;
+        let error = ensure_core(&under_boundary, Some(&url), false)
+            .await
+            .unwrap_err();
+        server.await.unwrap();
+        assert!(error.to_string().contains("маленький архив"));
+
+        let at_boundary = dir.path("at-boundary/xray");
+        let (url, server) = serve_once("200 OK", vec![b'Z'; 1_000_000]).await;
+        let error = ensure_core(&at_boundary, Some(&url), false)
+            .await
+            .unwrap_err();
+        server.await.unwrap();
+        assert!(!error.to_string().contains("маленький архив"));
+    }
+
+    #[tokio::test]
     async fn ensure_core_rejects_small_binary_inside_large_archive() {
         use zip::write::SimpleFileOptions;
 
@@ -1126,6 +1717,37 @@ mod tests {
         .await
         .unwrap_err();
         assert!(error.to_string().contains("не удалось скачать"));
+    }
+
+    #[tokio::test]
+    async fn ensure_core_reports_truncated_http_body() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request).await.unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 32\r\nConnection: close\r\n\r\npartial",
+                )
+                .await
+                .unwrap();
+        });
+
+        let dir = TestDir::new();
+        let path = dir.path("truncated/xray");
+        let error = ensure_core(&path, Some(&format!("http://{address}/xray.zip")), false)
+            .await
+            .unwrap_err();
+        server.await.unwrap();
+
+        assert!(error.to_string().contains("тело ответа xray"), "{error:#}");
+        assert!(!path.exists());
     }
 
     #[tokio::test]
@@ -1347,11 +1969,12 @@ mod tests {
         );
         let mut proxy = sample_proxy();
         proxy.name = "bad outbound".into();
+        let rejected_key = proxy.key();
         let port = checker.base_port;
 
         let result = Checker::handle_failure(
             &checker,
-            &format!("failed to build outbound config with tag: out_{port}"),
+            &format!("failed to build outbound config with tag: out_{port}: unknown field streamSettings.badField"),
             vec![(proxy, port)],
             speed_opts(),
             ProgressBar::hidden(),
@@ -1360,6 +1983,24 @@ mod tests {
 
         assert!(result.is_empty());
         assert_eq!(checker.bad_outbounds(), 1);
+        assert_eq!(
+            checker.bad_outbound_rejections().get(&rejected_key),
+            Some(&"unknown_config_field")
+        );
+    }
+
+    #[test]
+    fn bad_outbound_error_classification_uses_only_fixed_safe_labels() {
+        for (log, expected) in [
+            ("unknown field: secret token", "unknown_config_field"),
+            ("unknown protocol: private.example", "unknown_protocol"),
+            ("unsupported transport", "unsupported_feature"),
+            ("missing required field", "missing_config_value"),
+            ("invalid configuration", "invalid_config_value"),
+            ("private.example:443", "config_rejected"),
+        ] {
+            assert_eq!(bad_outbound_error_kind(log), expected);
+        }
     }
 
     #[tokio::test]
@@ -1498,16 +2139,20 @@ mod tests {
         std::fs::create_dir(&work).unwrap();
         let checker = test_checker(dir.path("missing-xray"), work, Duration::from_secs(1));
         let calls = AtomicUsize::new(0);
+        let probed_ports = std::sync::Mutex::new(Vec::new());
 
         let allocated = checker
-            .alloc_port_with(|_| {
+            .alloc_port_with(|port| {
+                probed_ports.lock().unwrap().push(port);
                 let attempt = calls.fetch_add(1, Ordering::Relaxed);
                 async move { attempt == 0 }
             })
             .await;
 
+        let probed_ports = probed_ports.into_inner().unwrap();
         assert_eq!(calls.load(Ordering::Relaxed), 2);
-        assert_ne!(allocated, checker.base_port);
+        assert_eq!(probed_ports.len(), 2);
+        assert_eq!(allocated, probed_ports[1]);
     }
 
     #[test]
@@ -1591,6 +2236,19 @@ mod tests {
             .unwrap();
     }
 
+    #[tokio::test]
+    async fn progress_reporter_guard_stops_a_live_non_tty_task() {
+        let good = Arc::new(Mutex::new(Vec::new()));
+        let pb = ProgressBar::hidden();
+        let reporter =
+            spawn_progress_reporter(pb, good, Instant::now(), false, Duration::from_secs(60))
+                .expect("non-TTY runs must start a periodic reporter");
+        tokio::task::yield_now().await;
+        assert!(!reporter.is_finished());
+
+        ReporterTask(Some(reporter)).stop().await;
+    }
+
     #[test]
     fn read_output_formats_wait_errors() {
         let message = format_read_output(Err(std::io::Error::other("fixture wait failure")));
@@ -1614,11 +2272,12 @@ mod tests {
     #[tokio::test]
     async fn bad_outbound_failure_falls_back_when_tag_is_not_in_mapping() {
         let dir = TestDir::new();
-        let checker = test_checker(
+        let mut checker = test_checker(
             dir.path("missing-xray"),
             dir.path("work"),
             Duration::from_secs(1),
         );
+        Arc::get_mut(&mut checker).unwrap().base_port = u16::MAX;
         let unmatched_port = if checker.base_port == u16::MAX {
             checker.base_port - 1
         } else {
@@ -1636,6 +2295,54 @@ mod tests {
 
         assert!(result.is_empty());
         assert_eq!(checker.bad_outbounds(), 0);
+    }
+
+    #[tokio::test]
+    async fn bad_outbound_fallback_handles_maximum_base_port() {
+        let dir = TestDir::new();
+        let mut checker = test_checker(
+            dir.path("missing-xray"),
+            dir.path("work"),
+            Duration::from_secs(1),
+        );
+        Arc::get_mut(&mut checker).unwrap().base_port = u16::MAX;
+
+        let result = Checker::handle_failure(
+            &checker,
+            "failed to build outbound config with tag: out_65534",
+            vec![(sample_proxy(), u16::MAX)],
+            speed_opts(),
+            ProgressBar::hidden(),
+        )
+        .await;
+
+        assert!(result.is_empty());
+        assert_eq!(checker.bad_outbounds(), 0);
+    }
+
+    #[tokio::test]
+    async fn bad_outbound_failure_ignores_a_tag_with_an_overflowing_port() {
+        let dir = TestDir::new();
+        let checker = test_checker(
+            dir.path("missing-xray"),
+            dir.path("work"),
+            Duration::from_secs(1),
+        );
+        let progress = ProgressBar::hidden();
+        progress.set_length(1);
+
+        let result = Checker::handle_failure(
+            &checker,
+            "failed to build outbound config with tag: out_999999",
+            vec![(sample_proxy(), checker.base_port)],
+            speed_opts(),
+            progress.clone(),
+        )
+        .await;
+
+        assert!(result.is_empty());
+        assert_eq!(checker.bad_outbounds(), 0);
+        assert_eq!(progress.position(), 1);
     }
 
     #[cfg(unix)]
@@ -1668,6 +2375,9 @@ mod tests {
     fn build_config_pairs_each_inbound_with_its_outbound_and_route() {
         let checker = Checker {
             core: PathBuf::new(),
+            hysteria1_core: PathBuf::new(),
+            no_hysteria1_download: true,
+            hysteria1_core_ready: tokio::sync::OnceCell::new(),
             work: PathBuf::new(),
             speed_threads: 1,
             start_timeout: Duration::from_secs(1),
@@ -1675,6 +2385,10 @@ mod tests {
             next: AtomicU16::new(12000),
             bad_re: Regex::new("out_\\d+").unwrap(),
             bad_outbounds: AtomicUsize::new(0),
+            bad_outbound_rejections: Mutex::new(HashMap::new()),
+            speed_unchecked: Mutex::new(HashSet::new()),
+            speed_measurements: Mutex::new(HashMap::new()),
+            speed_probe_results: Mutex::new(HashMap::new()),
         };
         let config = checker.build_config(&[(sample_proxy(), 12001)]);
         assert_eq!(config["inbounds"][0]["port"], 12001);
@@ -1687,9 +2401,12 @@ mod tests {
     }
 
     #[test]
-    fn build_config_omits_stream_settings_when_proxy_has_none() {
+    fn build_config_translates_hysteria2_to_xrays_hysteria_outbound() {
         let checker = Checker {
             core: PathBuf::new(),
+            hysteria1_core: PathBuf::new(),
+            no_hysteria1_download: true,
+            hysteria1_core_ready: tokio::sync::OnceCell::new(),
             work: PathBuf::new(),
             speed_threads: 1,
             start_timeout: Duration::from_secs(1),
@@ -1697,6 +2414,55 @@ mod tests {
             next: AtomicU16::new(12000),
             bad_re: Regex::new("out_\\d+").unwrap(),
             bad_outbounds: AtomicUsize::new(0),
+            bad_outbound_rejections: Mutex::new(HashMap::new()),
+            speed_unchecked: Mutex::new(HashSet::new()),
+            speed_measurements: Mutex::new(HashMap::new()),
+            speed_probe_results: Mutex::new(HashMap::new()),
+        };
+        let mut proxy = sample_proxy();
+        proxy.proto = "hysteria2";
+        proxy.settings = json!({"version": 2, "address": "hy2.example", "port": 443});
+        proxy.stream = Some(json!({
+            "network": "hysteria",
+            "security": "tls",
+            "tlsSettings": {"serverName": "sni.example"},
+            "hysteriaSettings": {"version": 2, "auth": "test-password"}
+        }));
+
+        let config = checker.build_config(&[(proxy, 12001)]);
+
+        assert_eq!(config["outbounds"][0]["protocol"], "hysteria");
+        assert_eq!(config["outbounds"][0]["settings"]["version"], 2);
+        assert_eq!(config["outbounds"][0]["settings"]["address"], "hy2.example");
+        assert_eq!(config["outbounds"][0]["settings"]["port"], 443);
+        assert_eq!(
+            config["outbounds"][0]["streamSettings"]["network"],
+            "hysteria"
+        );
+        assert_eq!(
+            config["outbounds"][0]["streamSettings"]["hysteriaSettings"]["auth"],
+            "test-password"
+        );
+    }
+
+    #[test]
+    fn build_config_omits_stream_settings_when_proxy_has_none() {
+        let checker = Checker {
+            core: PathBuf::new(),
+            hysteria1_core: PathBuf::new(),
+            no_hysteria1_download: true,
+            hysteria1_core_ready: tokio::sync::OnceCell::new(),
+            work: PathBuf::new(),
+            speed_threads: 1,
+            start_timeout: Duration::from_secs(1),
+            base_port: 12000,
+            next: AtomicU16::new(12000),
+            bad_re: Regex::new("out_\\d+").unwrap(),
+            bad_outbounds: AtomicUsize::new(0),
+            bad_outbound_rejections: Mutex::new(HashMap::new()),
+            speed_unchecked: Mutex::new(HashSet::new()),
+            speed_measurements: Mutex::new(HashMap::new()),
+            speed_probe_results: Mutex::new(HashMap::new()),
         };
         let mut proxy = sample_proxy();
         proxy.stream = None;
@@ -1710,6 +2476,9 @@ mod tests {
     async fn run_all_empty_input_returns_without_starting_xray() {
         let checker = Arc::new(Checker {
             core: PathBuf::new(),
+            hysteria1_core: PathBuf::new(),
+            no_hysteria1_download: true,
+            hysteria1_core_ready: tokio::sync::OnceCell::new(),
             work: PathBuf::new(),
             speed_threads: 1,
             start_timeout: Duration::from_secs(1),
@@ -1717,6 +2486,10 @@ mod tests {
             next: AtomicU16::new(12000),
             bad_re: Regex::new("out_\\d+").unwrap(),
             bad_outbounds: AtomicUsize::new(0),
+            bad_outbound_rejections: Mutex::new(HashMap::new()),
+            speed_unchecked: Mutex::new(HashSet::new()),
+            speed_measurements: Mutex::new(HashMap::new()),
+            speed_probe_results: Mutex::new(HashMap::new()),
         });
         let got = checker
             .run_all(
@@ -1729,6 +2502,7 @@ mod tests {
                     timeout_s: 1.0,
                     max_mb: 1.0,
                     min_kb: 0.0,
+                    speed_probes: 1,
                 },
                 "test",
                 None,
@@ -1736,6 +2510,74 @@ mod tests {
             .await
             .unwrap();
         assert!(got.is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_all_routes_hysteria1_to_its_runtime_without_starting_xray() {
+        let dir = TestDir::new();
+        let work = dir.path("work");
+        std::fs::create_dir(&work).unwrap();
+        let checker = test_checker(
+            dir.path("unused-xray"),
+            work.clone(),
+            Duration::from_secs(1),
+        );
+        let proxy = crate::parse::parse_link(
+            "hysteria://hy.example:443?auth=token&upmbps=10&downmbps=20#h1",
+        )
+        .unwrap();
+
+        let got = checker
+            .run_all(vec![proxy], 1, 1, speed_opts(), "test", None)
+            .await
+            .unwrap();
+
+        // The isolated test explicitly disables downloads. The Hysteria route
+        // must be attempted and accounted for, without trying to run Xray.
+        assert!(got.is_empty());
+        assert_eq!(checker.speed_unchecked_keys().len(), 1);
+        assert_eq!(std::fs::read_dir(work).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn run_all_separates_hysteria_and_unverified_protocols_from_xray_checks() {
+        let dir = TestDir::new();
+        let work = dir.path("work");
+        std::fs::create_dir(&work).unwrap();
+        let checker = test_checker(
+            dir.path("missing-xray"),
+            work.clone(),
+            Duration::from_secs(1),
+        );
+        let hysteria1 = crate::parse::parse_link(
+            "hysteria://hy.example:443?auth=token&upmbps=10&downmbps=20#h1",
+        )
+        .unwrap();
+        let hysteria2_gecko = crate::parse::parse_link(
+            "hysteria2://token@hy2.example:443?obfs=gecko&obfs-password=secret#h2-gecko",
+        )
+        .unwrap();
+        let mut xray_checked = sample_proxy();
+        xray_checked.proto = "vless";
+
+        let got = checker
+            .run_all(
+                vec![hysteria1.clone(), hysteria2_gecko.clone(), xray_checked],
+                3,
+                1,
+                speed_opts(),
+                "mixed protocols",
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(got.is_empty());
+        let unchecked = checker.speed_unchecked_keys();
+        assert!(unchecked.contains(&hysteria1.key()));
+        assert!(unchecked.contains(&hysteria2_gecko.key()));
+        assert_eq!(unchecked.len(), 2);
+        assert_eq!(std::fs::read_dir(work).unwrap().count(), 0);
     }
 
     #[cfg(unix)]
@@ -1817,6 +2659,7 @@ PY
                     timeout_s: 2.0,
                     max_mb: 0.5,
                     min_kb: 1.0,
+                    speed_probes: 1,
                 },
                 "test",
                 Some(good_path.to_string_lossy().into_owned()),
@@ -1830,6 +2673,7 @@ PY
             std::fs::read_to_string(good_path).unwrap(),
             format!("{}\n", crate::output::line(&proxies[0], true))
         );
+        let previous_good = std::fs::read_to_string(dir.path("good.txt")).unwrap();
         assert_eq!(std::fs::read_dir(&work).unwrap().count(), 0);
 
         let slow = checker
@@ -1843,27 +2687,34 @@ PY
                     timeout_s: 2.0,
                     max_mb: 0.5,
                     min_kb: f64::MAX,
+                    speed_probes: 1,
                 },
                 "slow proxy",
-                None,
+                Some(dir.path("good.txt").to_string_lossy().into_owned()),
             )
             .await
             .unwrap();
         assert!(slow.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(dir.path("good.txt")).unwrap(),
+            previous_good,
+            "an empty speed result must not erase the last good output"
+        );
 
         let invalid_good_path = dir.path("good-directory");
         std::fs::create_dir(&invalid_good_path).unwrap();
         let error = checker
             .run_all(
-                vec![sample_proxy()],
+                vec![sample_proxy(), sample_proxy()],
                 1,
-                1,
+                2,
                 SpeedOpts {
                     primary: Some("http://example.test/download".into()),
                     connect_timeout_s: 1.0,
                     timeout_s: 2.0,
                     max_mb: 0.5,
                     min_kb: 1.0,
+                    speed_probes: 1,
                 },
                 "write error",
                 Some(invalid_good_path.to_string_lossy().into_owned()),

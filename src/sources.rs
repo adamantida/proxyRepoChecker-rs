@@ -234,6 +234,18 @@ mod tests {
     }
 
     #[test]
+    fn collect_allows_missing_sources_when_a_link_file_is_given() {
+        let temp = TempDir::new();
+        let missing_sources = temp.0.join("optional-sources.json");
+        let links = temp.write("links.txt", "vless://id@example.com:443\n");
+
+        let collected = collect(&cli(&missing_sources, &["-f", links.to_str().unwrap()])).unwrap();
+
+        assert!(collected.fetch_urls.is_empty());
+        assert_eq!(collected.direct_links, ["vless://id@example.com:443"]);
+    }
+
+    #[test]
     fn collect_reports_sources_read_errors() {
         let temp = TempDir::new();
         let sources_directory = temp.0.join("sources-directory");

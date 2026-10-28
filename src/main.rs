@@ -1,21 +1,26 @@
 mod check;
 mod checkpoint;
 mod cli;
+mod diagnose;
 mod fetch;
 mod geoip;
+mod hysteria1;
 mod outbound;
 mod output;
 mod parse;
 mod pipeline;
+mod singbox_check;
 mod source_report;
 mod sources;
 mod speed;
+mod table;
 mod tcp_ping;
 mod xray;
 
 use clap::Parser;
 use cli::Cli;
 use colored::Colorize;
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -45,6 +50,14 @@ fn percentage(part: usize, total: usize) -> f64 {
     }
 }
 
+fn has_fetch_failures(summary: &Summary) -> bool {
+    summary.fetch_failed > 0
+}
+
+fn has_bad_outbounds(summary: &Summary) -> bool {
+    summary.bad_outbounds > 0
+}
+
 #[derive(Debug, Default)]
 struct Summary {
     fetch_sources: usize,
@@ -57,6 +70,7 @@ struct Summary {
     duplicates: usize,
     invalid: usize,
     unsupported: usize,
+    unsupported_details: BTreeMap<String, usize>,
     parse_secs: f64,
     geo: bool,
     geo_countries: usize,
@@ -68,6 +82,7 @@ struct Summary {
     speed_enabled: bool,
     speed_total: usize,
     speed_passed: usize,
+    speed_unchecked: usize,
     speed_secs: f64,
     bad_outbounds: usize,
     alive: usize,
@@ -77,6 +92,9 @@ struct Summary {
     alive_file: Option<(String, usize)>,
     good_file: Option<(String, usize)>,
     clash_file: Option<(String, usize)>,
+    singbox_file: Option<(String, usize)>,
+    singbox_report_file: Option<(String, usize)>,
+    speed_report_file: Option<(String, usize)>,
     dead_file: Option<(String, usize)>,
     raw_file: Option<(String, usize)>,
     parsed_file: Option<(String, usize)>,
@@ -97,12 +115,14 @@ fn print_summary(s: &Summary) {
 
     println!("\n  {}", "Источники".cyan().bold());
     println!(
-        "    подписок: {}   загружено: {}   ({})",
+        "    {:<15} {:>9}   {:<15} {:>9}   {}",
+        "Подписок:",
         s.fetch_sources,
+        "Загружено:",
         s.fetch_loaded,
         fmt_dur(s.fetch_secs)
     );
-    if s.fetch_failed > 0 {
+    if has_fetch_failures(s) {
         println!(
             "    {} {}",
             "Ошибок загрузки:".yellow().bold(),
@@ -113,19 +133,25 @@ fn print_summary(s: &Summary) {
         }
     }
     println!(
-        "    ссылок: {}   уникальных: {}   ({})",
+        "    {:<15} {:>9}   {:<15} {:>9}   {}",
+        "Ссылок:",
         s.links,
-        s.unique.to_string().green(),
-        fmt_dur(s.parse_secs)
+        "Уникальных:",
+        format!("{:>9}", s.unique).green(),
+        fmt_dur(s.parse_secs).dimmed()
     );
-    let mut bad = format!("дублей: {}", s.duplicates);
-    if s.invalid > 0 {
-        bad.push_str(&format!("   некорр.: {}", s.invalid));
+    println!(
+        "    {:<13} {:>8}   {:<13} {:>8}   {:<13} {:>8}",
+        "Дубликатов:", s.duplicates, "Некорр.:", s.invalid, "Неподдерж.:", s.unsupported
+    );
+    if !s.unsupported_details.is_empty() {
+        let table = crate::table::render_count_table(
+            s.unsupported_details
+                .iter()
+                .map(|(reason, count)| (reason.clone(), *count)),
+        );
+        println!("\n  Детализация неподдержки:\n{table}");
     }
-    if s.unsupported > 0 {
-        bad.push_str(&format!("   неподдерж.: {}", s.unsupported));
-    }
-    println!("    {}", bad.dimmed());
 
     if s.geo {
         println!("\n  {}", "GeoIP".cyan().bold());
@@ -148,7 +174,7 @@ fn print_summary(s: &Summary) {
     }
 
     if s.speed_enabled {
-        println!("\n  {}", "Скорость (Xray)".cyan().bold());
+        println!("\n  {}", "Проверка скорости".cyan().bold());
         let pct = percentage(s.speed_passed, s.speed_total);
         println!(
             "    прошли порог: {}/{} ({pct:.1}%)   ({})",
@@ -156,6 +182,12 @@ fn print_summary(s: &Summary) {
             s.speed_total,
             fmt_dur(s.speed_secs)
         );
+        if s.speed_unchecked > 0 {
+            println!(
+                "    без проверки подходящим ядром: {}",
+                s.speed_unchecked.to_string().yellow()
+            );
+        }
         if s.good > 0 {
             println!(
                 "    средняя: {}   медиана: {}",
@@ -163,7 +195,7 @@ fn print_summary(s: &Summary) {
                 fmt_speed(s.median_kbs).cyan()
             );
         }
-        if s.bad_outbounds > 0 {
+        if has_bad_outbounds(s) {
             println!(
                 "    {} {}",
                 "Некорректных outbound:".yellow(),
@@ -184,6 +216,9 @@ fn print_summary(s: &Summary) {
         s.alive_file.as_ref(),
         s.good_file.as_ref(),
         s.clash_file.as_ref(),
+        s.singbox_file.as_ref(),
+        s.singbox_report_file.as_ref(),
+        s.speed_report_file.as_ref(),
         s.dead_file.as_ref(),
     ]
     .into_iter()
@@ -215,33 +250,105 @@ async fn run_app() -> anyhow::Result<()> {
             .error(ErrorKind::ValueValidation, message)
             .exit();
     }
-    let alive_path = PathBuf::from(&cli.output);
-    let previous_alive = match std::fs::read(&alive_path) {
-        Ok(bytes) => Some(bytes),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error.into()),
-    };
-    match run_with_cancellation(pipeline::run(cli), tokio::signal::ctrl_c()).await? {
-        RunOutcome::Completed(summary) => print_summary(&summary),
-        RunOutcome::Cancelled => {
-            restore_cancelled_alive(&alive_path, previous_alive)?;
-            println!("\nОтменено по Ctrl-C.");
-        }
+    if let Some(path) = &cli.check_one {
+        return run_check_one(&cli, path).await;
+    }
+    run_app_with_cancellation(cli, pipeline::run, tokio::signal::ctrl_c()).await
+}
+
+async fn run_check_one(cli: &Cli, path: &str) -> anyhow::Result<()> {
+    use anyhow::Context;
+
+    let contents = tokio::fs::read_to_string(path)
+        .await
+        .with_context(|| format!("не удалось прочитать файл диагностики: {path}"))?;
+    let links: Vec<_> = contents
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+    anyhow::ensure!(
+        links.len() == 1,
+        "--check-one ожидает ровно один URI прокси в файле (найдено: {})",
+        links.len()
+    );
+
+    let mut options =
+        diagnose::DiagnosticOptions::new(pipeline::resolve_default(&cli.core), &cli.workdir);
+    options.base_port = cli.lport;
+    options.start_timeout = std::time::Duration::from_secs_f64(cli.core_start_timeout);
+    options.no_xray_download = cli.no_xray_download;
+    options.no_hysteria1_download = cli.no_hysteria1_download;
+    options.speed_url = cli.speed_url.clone();
+    options.connect_timeout_s = cli.speed_connect_timeout;
+    options.speed_timeout_s = cli.speed_timeout;
+    options.max_size_mb = cli.speed_max_mb;
+    options.min_speed_kbs = cli.min_kb;
+    options.speed_probes = cli.speed_probes;
+
+    let report = diagnose::diagnose_link(links[0], options).await?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    if let Some(failure) = report.failure {
+        anyhow::bail!("диагностика не пройдена: {failure:?}");
     }
     Ok(())
 }
 
+async fn run_app_with_cancellation<F, Fut, S>(
+    cli: Cli,
+    run_pipeline: F,
+    signal: S,
+) -> anyhow::Result<()>
+where
+    F: FnOnce(Cli) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<Summary>>,
+    S: std::future::Future<Output = std::io::Result<()>>,
+{
+    let alive_path = PathBuf::from(&cli.output);
+    let previous_alive = read_previous_alive(&alive_path)?;
+    match run_with_cancellation(run_pipeline(cli), signal).await? {
+        RunOutcome::Completed(summary) => print_summary(&summary),
+        RunOutcome::Cancelled => handle_cancelled_run(&alive_path, previous_alive)?,
+    }
+    Ok(())
+}
+
+fn handle_cancelled_run(alive_path: &Path, previous_alive: Option<Vec<u8>>) -> anyhow::Result<()> {
+    restore_cancelled_alive(alive_path, previous_alive)?;
+    println!("\nОтменено по Ctrl-C.");
+    Ok(())
+}
+
+fn read_previous_alive(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 fn print_error(error: &anyhow::Error) {
+    let stderr = std::io::stderr();
+    write_error(&mut stderr.lock(), error);
+}
+
+fn write_error(writer: &mut impl std::io::Write, error: &anyhow::Error) {
     let mut causes = error.chain();
     if let Some(context) = causes.next() {
-        eprintln!(
+        let _ = writeln!(
+            writer,
             "\n{} {}",
             "✖ Ошибка".red().bold(),
             context.to_string().red()
         );
     }
     for cause in causes {
-        eprintln!("  {} {}", "└─".yellow().bold(), cause.to_string().yellow());
+        let _ = writeln!(
+            writer,
+            "  {} {}",
+            "└─".yellow().bold(),
+            cause.to_string().yellow()
+        );
     }
 }
 
@@ -287,6 +394,36 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    #[test]
+    fn write_error_formats_root_cause_and_context_chain() {
+        let error = anyhow::anyhow!("socket closed").context("request failed");
+        let mut output = Vec::new();
+
+        super::write_error(&mut output, &error);
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("request failed"), "{output:?}");
+        assert!(output.contains("socket closed"), "{output:?}");
+        assert!(output.find("request failed").unwrap() < output.find("socket closed").unwrap());
+    }
+
+    #[test]
+    fn write_error_formats_single_error_without_a_cause_line() {
+        let error = anyhow::anyhow!("standalone failure");
+        let mut output = Vec::new();
+
+        super::write_error(&mut output, &error);
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("standalone failure"), "{output:?}");
+        assert_eq!(output.matches("└─").count(), 0, "{output:?}");
+    }
+
+    #[test]
+    fn print_error_writes_to_standard_error() {
+        super::print_error(&anyhow::anyhow!("fixture failure"));
+    }
+
     #[tokio::test]
     async fn cancellation_signal_returns_distinct_outcome_and_drops_pipeline() {
         struct DropFlag(std::sync::Arc<std::sync::atomic::AtomicBool>);
@@ -304,8 +441,7 @@ mod tests {
         let outcome = run_with_cancellation(
             async move {
                 let _flag = flag;
-                std::future::pending::<()>().await;
-                Ok(Summary::default())
+                std::future::pending::<anyhow::Result<Summary>>().await
             },
             async move { signal_rx.await.unwrap() },
         )
@@ -314,6 +450,43 @@ mod tests {
 
         assert!(matches!(outcome, super::RunOutcome::Cancelled));
         assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn run_app_cancellation_restores_previous_alive_file() {
+        let temp = TempDir::new();
+        let alive = temp.write("alive.txt", "previous result\n");
+        let cli = temp.cli(None, &[]);
+        let (signal_tx, signal_rx) = tokio::sync::oneshot::channel();
+        signal_tx.send(Ok(())).unwrap();
+
+        super::run_app_with_cancellation(
+            cli,
+            |_| async { std::future::pending::<anyhow::Result<Summary>>().await },
+            async move { signal_rx.await.unwrap() },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(fs::read(alive).unwrap(), b"previous result\n");
+    }
+
+    #[tokio::test]
+    async fn run_app_returns_pipeline_error_without_changing_previous_alive_file() {
+        let temp = TempDir::new();
+        let alive = temp.write("alive.txt", "previous result\n");
+        let cli = temp.cli(None, &[]);
+
+        let error = super::run_app_with_cancellation(
+            cli,
+            |_| async { anyhow::bail!("local pipeline failure") },
+            std::future::pending::<std::io::Result<()>>(),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "local pipeline failure");
+        assert_eq!(fs::read(alive).unwrap(), b"previous result\n");
     }
 
     #[tokio::test]
@@ -350,10 +523,7 @@ mod tests {
         )
         .await;
 
-        let error = match result {
-            Ok(_) => panic!("pipeline error was lost"),
-            Err(error) => error,
-        };
+        let error = result.err().unwrap();
         assert_eq!(error.to_string(), "pipeline failed");
     }
 
@@ -368,10 +538,7 @@ mod tests {
             })
             .await;
 
-        let error = match result {
-            Ok(_) => panic!("signal error was lost"),
-            Err(error) => error,
-        };
+        let error = result.err().unwrap();
         assert_eq!(error.to_string(), "signal handler failed");
     }
 
@@ -391,6 +558,16 @@ mod tests {
         super::restore_cancelled_alive(&new_file, None).unwrap();
         assert!(!new_file.exists());
         super::restore_cancelled_alive(&new_file, None).unwrap();
+    }
+
+    #[test]
+    fn cancelled_run_restores_previous_alive_file() {
+        let temp = TempDir::new();
+        let alive = temp.write("alive.txt", "partial result\n");
+
+        super::handle_cancelled_run(&alive, Some(b"previous result\n".to_vec())).unwrap();
+
+        assert_eq!(fs::read(alive).unwrap(), b"previous result\n");
     }
 
     #[test]
@@ -565,6 +742,26 @@ mod tests {
         .0;
         assert!(pipeline::retain_within_max_ping(&mut unlimited, 0).is_empty());
         assert_eq!(unlimited.len(), 1);
+    }
+
+    #[test]
+    fn max_ping_keeps_hysteria_proxies_without_tcp_measurements() {
+        let links = vec![
+            "hysteria://secret@h1.example:443?protocol=udp&upmbps=10&downmbps=50#h1".to_string(),
+            "hysteria2://secret@h2.example:443?insecure=1#h2".to_string(),
+            "vless://01234567-89ab-cdef-0123-456789abcdef@unknown.example:443#unknown".to_string(),
+        ];
+        let (mut proxies, stats) = parse::parse_all(links);
+        assert_eq!(stats.parsed, 3);
+
+        let rejected = pipeline::retain_within_max_ping(&mut proxies, 25);
+
+        assert_eq!(proxies.len(), 2);
+        assert!(proxies
+            .iter()
+            .all(|proxy| matches!(proxy.proto, "hysteria" | "hysteria2")));
+        assert_eq!(rejected.len(), 1);
+        assert!(rejected[0].contains("unknown.example"));
     }
 
     #[test]
@@ -1182,6 +1379,7 @@ mod tests {
         assert_eq!(summary.fetch_failed, 1);
         assert_eq!(summary.alive, 1);
         assert_eq!(report["sources"][0]["status"], "fetch_failed");
+        assert_eq!(report["sources"][0]["fetch_failure"], "http_503");
         assert!(!report.to_string().contains("private-value"));
     }
 
@@ -1369,5 +1567,34 @@ mod tests {
             speed_total: 0,
             ..Summary::default()
         });
+    }
+
+    #[test]
+    fn summary_conditions_report_only_nonzero_source_and_outbound_errors() {
+        let mut summary = Summary::default();
+        assert!(!super::has_fetch_failures(&summary));
+        assert!(!super::has_bad_outbounds(&summary));
+
+        summary.fetch_failed = 1;
+        summary.bad_outbounds = 1;
+        assert!(super::has_fetch_failures(&summary));
+        assert!(super::has_bad_outbounds(&summary));
+    }
+
+    #[test]
+    fn read_previous_alive_distinguishes_missing_empty_and_unreadable_paths() {
+        let temp = TempDir::new();
+        let missing = temp.path().join("missing-alive.txt");
+        assert_eq!(super::read_previous_alive(&missing).unwrap(), None);
+
+        let existing = temp.write("alive.txt", "");
+        assert_eq!(
+            super::read_previous_alive(&existing).unwrap(),
+            Some(Vec::new())
+        );
+
+        let directory = temp.path().join("alive-directory");
+        fs::create_dir(&directory).unwrap();
+        assert!(super::read_previous_alive(&directory).is_err());
     }
 }

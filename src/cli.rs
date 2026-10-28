@@ -47,6 +47,10 @@ pub struct Cli {
     #[arg(short = 'f', long, value_name = "FILE", help_heading = "Источники")]
     pub file: Option<String>,
 
+    /// Диагностировать один URI прокси из файла и завершить работу
+    #[arg(long = "check-one", value_name = "FILE", help_heading = "Источники")]
+    pub check_one: Option<String>,
+
     /// Доп. URL подписок для загрузки
     #[arg(short = 'u', long, value_name = "URL", help_heading = "Источники")]
     pub url: Vec<String>,
@@ -144,6 +148,10 @@ pub struct Cli {
     #[arg(short = 's', long, help_heading = "Вывод")]
     pub shuffle: bool,
 
+    /// Seed для повторяемого перемешивания; включает --shuffle
+    #[arg(long = "shuffle-seed", value_name = "U64", help_heading = "Вывод")]
+    pub shuffle_seed: Option<u64>,
+
     /// Сырые тексты загруженных источников (сохраняется после загрузки)
     #[arg(long = "raw-output", default_value = "raw.txt", help_heading = "Вывод")]
     pub raw_output: String,
@@ -173,6 +181,26 @@ pub struct Cli {
     /// В Clash-конфиге не создавать группы-категории (Telegram/AI/YouTube/Игры)
     #[arg(long = "clash-no-categories", help_heading = "Вывод")]
     pub clash_no_categories: bool,
+
+    /// Сгенерировать конфигурацию sing-box из прокси, прошедших проверку скорости
+    #[arg(long = "singbox", value_name = "FILE", num_args = 0..=1, default_missing_value = "sing-box.json", help_heading = "Вывод")]
+    pub singbox: Option<String>,
+
+    /// Сохранить JSON-отчёт многократных замеров скорости
+    #[arg(long = "speed-report", value_name = "FILE", help_heading = "Вывод")]
+    pub speed_report: Option<String>,
+
+    /// Сохранить отчёт о прокси, пропущенных при экспорте sing-box
+    #[arg(long = "singbox-report", value_name = "FILE", help_heading = "Вывод")]
+    pub singbox_report: Option<String>,
+
+    /// Проверить созданный конфиг установленным sing-box (`sing-box check -c FILE`)
+    #[arg(long = "singbox-check", help_heading = "Вывод")]
+    pub singbox_check: bool,
+
+    /// Путь к исполняемому файлу sing-box (по умолчанию поиск через PATH)
+    #[arg(long = "singbox-bin", value_name = "FILE", help_heading = "Вывод")]
+    pub singbox_bin: Option<String>,
 
     // --------------------------- Ядро (xray) ---------------------------
     /// Путь к ядру (xray)
@@ -210,6 +238,10 @@ pub struct Cli {
     /// Не скачивать ядро автоматически (ошибка, если его нет)
     #[arg(long = "no-xray-download", help_heading = "Ядро (xray)")]
     pub no_xray_download: bool,
+
+    /// Не скачивать Hysteria v1 core автоматически (ошибка, если его нет)
+    #[arg(long = "no-hysteria1-download", help_heading = "Ядро (Hysteria 1)")]
+    pub no_hysteria1_download: bool,
 
     // ---------------------- TCP ping (префильтр) -----------------------
     /// Выключить TCP ping префильтр
@@ -309,6 +341,14 @@ pub struct Cli {
     )]
     pub speed_threads: usize,
 
+    /// Число независимых адресов для замера скорости (1..=9)
+    #[arg(
+        long = "speed-probes",
+        default_value_t = 3,
+        help_heading = "Проверка скорости"
+    )]
+    pub speed_probes: usize,
+
     // ------------------------------- GeoIP -----------------------------
     /// Выключить GeoIP (без переименования в [XX] - NNN)
     #[arg(long = "no-geoip", help_heading = "GeoIP")]
@@ -363,6 +403,7 @@ impl Cli {
             ("--batch", self.batch, 10000),
             ("--batch-workers", self.batch_workers, 1024),
             ("--speed-threads", self.speed_threads, 4096),
+            ("--speed-probes", self.speed_probes, 9),
             ("--tcp-concurrency", self.tcp_concurrency, 65536),
         ] {
             if value == 0 || value > max {
@@ -371,6 +412,18 @@ impl Cli {
         }
         if self.fetch_retries > 8 {
             return Err("--fetch-retries должен быть в диапазоне 0..=8".into());
+        }
+        if self.speed_report.is_some() && self.no_speed {
+            return Err("--speed-report нельзя использовать вместе с --no-speed".into());
+        }
+        if self.singbox_report.is_some() && self.singbox.is_none() {
+            return Err("--singbox-report требует --singbox".into());
+        }
+        if self.singbox_check && self.singbox.is_none() {
+            return Err("--singbox-check требует --singbox".into());
+        }
+        if self.singbox_bin.is_some() && !self.singbox_check {
+            return Err("--singbox-bin требует --singbox-check".into());
         }
         if !(1024..=1_073_741_824).contains(&self.max_source_bytes) {
             return Err("--max-source-bytes должен быть в диапазоне 1024..=1073741824".into());
@@ -384,12 +437,35 @@ impl Cli {
         if self.limit == Some(0) {
             return Err("--limit должен быть больше 0".into());
         }
+        if self.check_one.is_some()
+            && (self.file.is_some()
+                || !self.url.is_empty()
+                || self.resume
+                || self.clash.is_some()
+                || self.singbox.is_some()
+                || self.singbox_report.is_some()
+                || self.speed_report.is_some()
+                || self.source_report.is_some()
+                || self.json_output.is_some())
+        {
+            return Err(
+                "--check-one нельзя совмещать с --file/--url, --resume или режимами экспорта"
+                    .into(),
+            );
+        }
         if self.resume && self.checkpoint.is_none() {
             return Err("--resume требует указать --checkpoint FILE".into());
         }
         for protocol in &self.protocol {
-            if !["vless", "vmess", "trojan", "shadowsocks"]
-                .contains(&protocol.to_ascii_lowercase().as_str())
+            if ![
+                "vless",
+                "vmess",
+                "trojan",
+                "shadowsocks",
+                "hysteria",
+                "hysteria2",
+            ]
+            .contains(&protocol.to_ascii_lowercase().as_str())
             {
                 return Err(format!("неподдерживаемый фильтр --protocol: {protocol}"));
             }
@@ -491,6 +567,28 @@ mod tests {
     }
 
     #[test]
+    fn singbox_validation_requires_config_and_explicit_check_for_binary_override() {
+        let mut cli = defaults();
+        cli.singbox_check = true;
+        assert!(cli.validate().unwrap_err().contains("--singbox-check"));
+
+        let mut cli = defaults();
+        cli.singbox_bin = Some("/tmp/sing-box".into());
+        assert!(cli.validate().unwrap_err().contains("--singbox-bin"));
+
+        let cli = Cli::try_parse_from([
+            "proxy-rs",
+            "--singbox",
+            "generated.json",
+            "--singbox-check",
+            "--singbox-bin",
+            "/tmp/sing-box",
+        ])
+        .unwrap();
+        assert!(cli.validate().is_ok());
+    }
+
+    #[test]
     fn rejects_invalid_fetch_options_resume_filters_and_empty_countries() {
         let mut cli = defaults();
         cli.fetch_retries = 9;
@@ -511,7 +609,7 @@ mod tests {
         assert!(cli.validate().unwrap_err().contains("--protocol"));
 
         let mut cli = defaults();
-        cli.protocol = vec!["VLESS".into(), "Shadowsocks".into()];
+        cli.protocol = vec!["VLESS".into(), "Shadowsocks".into(), "Hysteria2".into()];
         cli.country = vec!["DE".into(), "  ".into()];
         assert!(cli.validate().unwrap_err().contains("--country"));
     }
@@ -522,7 +620,12 @@ mod tests {
         cli.fetch_retries = 0;
         cli.max_source_bytes = 1024;
         cli.lport = 1024;
-        cli.protocol = vec!["VLESS".into(), "Shadowsocks".into()];
+        cli.protocol = vec![
+            "VLESS".into(),
+            "Shadowsocks".into(),
+            "Hysteria".into(),
+            "Hysteria2".into(),
+        ];
         cli.country = vec!["DE".into()];
         assert!(cli.validate().is_ok());
     }
@@ -550,8 +653,66 @@ mod tests {
         cli.speed_connect_timeout = 3600.0;
         cli.core_start_timeout = 3600.0;
         cli.speed_max_mb = 1024.0;
+        cli.min_kb = 1_000_000_000.0;
+        cli.fetch_retries = 8;
+        cli.fetch_concurrency = 4096;
+        cli.batch = 10000;
+        cli.batch_workers = 1024;
+        cli.speed_threads = 4096;
+        cli.speed_probes = 9;
+        cli.tcp_concurrency = 65536;
+        cli.max_source_bytes = 1_073_741_824;
         cli.lport = 65000;
         cli.tcp_retries = 100;
         assert!(cli.validate().is_ok());
+    }
+
+    #[test]
+    fn parses_new_export_diagnostic_and_speed_probe_options() {
+        let cli = Cli::try_parse_from([
+            "proxy-rs",
+            "--singbox",
+            "nodes.json",
+            "--singbox-report",
+            "skipped.json",
+            "--speed-report",
+            "speed.json",
+            "--speed-probes",
+            "5",
+        ])
+        .unwrap();
+
+        assert_eq!(cli.singbox.as_deref(), Some("nodes.json"));
+        assert_eq!(cli.singbox_report.as_deref(), Some("skipped.json"));
+        assert_eq!(cli.speed_report.as_deref(), Some("speed.json"));
+        assert_eq!(cli.speed_probes, 5);
+        assert!(cli.validate().is_ok());
+
+        let diagnostic = Cli::try_parse_from(["proxy-rs", "--check-one", "one.txt"]).unwrap();
+        assert_eq!(diagnostic.check_one.as_deref(), Some("one.txt"));
+        assert!(diagnostic.validate().is_ok());
+
+        let orphan_report =
+            Cli::try_parse_from(["proxy-rs", "--singbox-report", "skipped.json"]).unwrap();
+        assert!(orphan_report
+            .validate()
+            .unwrap_err()
+            .contains("требует --singbox"));
+    }
+
+    #[test]
+    fn validates_speed_probe_count_and_one_proxy_mode_conflicts() {
+        let mut cli = defaults();
+        cli.speed_probes = 0;
+        assert!(cli.validate().unwrap_err().contains("--speed-probes"));
+
+        let mut cli = defaults();
+        cli.speed_probes = 10;
+        assert!(cli.validate().unwrap_err().contains("--speed-probes"));
+
+        let mut cli = defaults();
+        cli.check_one = Some("proxy.txt".into());
+        cli.url.push("https://feed.example/list".into());
+        assert!(cli.validate().unwrap_err().contains("--check-one"));
     }
 }

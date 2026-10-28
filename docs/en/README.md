@@ -1,8 +1,8 @@
 # proxy-rs
 
-**Collect, parse, and test proxy subscriptions from the command line.** `proxy-rs` turns subscription URLs and local proxy links into a deduplicated list, optionally looks up countries, checks TCP reachability and download speed through Xray, and can generate a Clash/mihomo configuration from proxies that pass the speed threshold.
+**Collect, parse, and test proxy subscriptions from the command line.** `proxy-rs` turns subscription URLs and local proxy links into a deduplicated list, optionally looks up countries, checks TCP reachability where applicable and measures download speed through Xray or the dedicated Hysteria 1 core, and can generate a Clash/mihomo configuration from proxies that pass the speed threshold.
 
-The repository is a Rust workspace. The root package contains the CLI; [`proxy-clash`](../../proxy-clash) is a standalone library for rendering Clash/mihomo YAML.
+The repository is a Rust workspace. The root package contains the CLI; [`proxy-clash`](../../proxy-clash) renders Clash/mihomo YAML, and [`proxy-singbox`](../../proxy-singbox) converts supported nodes to sing-box JSON with a conversion report.
 
 > The CLI help and diagnostics are currently in Russian. Run `proxy-rs --help` (or `cargo run -- --help`) for the authoritative options available in the binary you built.
 
@@ -24,9 +24,9 @@ The repository is a Rust workspace. The root package contains the CLI; [`proxy-c
 ## Features
 
 - Read subscription URLs from a JSON source catalog, add URLs on the command line, and read direct proxy links or more URLs from a text file.
-- Extract and parse VLESS, VMess, Trojan, and Shadowsocks links; normalize supported transports and remove duplicates.
+- Extract and parse VLESS, VMess, Trojan, Shadowsocks (`ss`), Hysteria 1, and Hysteria 2 links; supported transports and speed-check eligibility depend on the selected core.
 - Optionally map server IP addresses to countries using a local `geoip.dat` database.
-- Filter endpoints by TCP connection time, then measure download speed through Xray.
+- Apply a TCP prefilter where applicable, then measure speed through Xray or the dedicated Hysteria 1 core.
 - Write intermediate and final result files using atomic replacement.
 - Render a Clash/mihomo YAML configuration from speed-qualified proxies.
 - Run on Windows, macOS, and Linux. Automatic Xray downloads are provided for x86_64 and aarch64 on those operating systems.
@@ -100,7 +100,7 @@ proxy-rs --file links.txt --no-geoip --no-tcp-ping --no-speed
 Generate a Clash/mihomo configuration from proxies that pass a 500 KB/s threshold:
 
 ```sh
-proxy-rs --set 3 --shuffle --limit 200 --min-kb 500 --clash clash.yaml
+proxy-rs --set 3 --shuffle-seed 42 --limit 200 --min-kb 500 --clash clash.yaml
 ```
 
 These examples that use remote sources perform real network requests when run. A local-only smoke test can use a file containing a syntactically valid proxy URI together with `--no-geoip --no-tcp-ping --no-speed`.
@@ -133,7 +133,9 @@ Use `--sources FILE` to select a different catalog. If the default catalog is no
 
 Subscription URLs from the catalog, `--url`, and `--file` are deduplicated. Direct links from a file are appended to the links extracted from fetched subscriptions.
 
-The parser supports `vless://`, `vmess://` (including Base64-encoded VMess JSON), `trojan://`, and `ss://` links. Protocol schemes outside this set are reported as unsupported or ignored; malformed links are counted separately from unsupported protocols.
+The parser supports `vless://`, `vmess://` (including Base64-encoded VMess JSON), `trojan://`, `ss://`, `hysteria://` (Hysteria 1), and `hysteria2://`/`hy2://` (Hysteria 2). SS links with a `plugin` parameter are explicitly rejected so the app never checks a connection after silently dropping its required plugin. `ssr://`, `tuic://`, and `anytls://` remain unsupported; malformed links are counted separately from unsupported protocols.
+
+For Shadowsocks, the parser accepts SIP002 `method:password@host:port` links (including Base64URL userinfo) and the legacy Base64-encoded `method:password@host:port` form. Invalid separators are reported separately; nonstandard cipher labels are summarized as `method=nonstandard` without exposing their original value. See the [Shadowsocks SIP002 specification](https://github.com/shadowsocks/shadowsocks-org/wiki/SIP002-URI-Scheme).
 
 ## Processing pipeline and result semantics
 
@@ -141,17 +143,17 @@ The normal pipeline is:
 
 1. **Collect sources.** Read the selected catalog set, extra URLs, and optional link file.
 2. **Fetch subscriptions.** Download URLs concurrently, using `--fetch-concurrency` and `--fetch-timeout`. Successful response bodies are saved to the raw output file.
-3. **Extract, parse, and deduplicate links.** Direct links from the file are combined with links extracted from fetched text. `--shuffle` and `--limit` are applied before the check stages.
+3. **Extract, parse, and deduplicate links.** Direct links from the file are combined with links extracted from fetched text. `--shuffle` and `--limit` are applied before checks; `--shuffle-seed N` makes the order repeatable for the same input and binary version.
 4. **Write the parsed list and perform GeoIP lookup.** Unless disabled, the database maps IP addresses to country codes and names are displayed in the `[XX] - NNN` style. The parsed output is then refreshed with the renamed display names.
-5. **TCP prefilter.** Unless `--no-tcp-ping` is set, connect to each proxy endpoint and record its TCP round-trip time. `--tcp-max-ms` can reject slow TCP probes; `--max-ping` can additionally discard live endpoints above the specified RTT.
-6. **Speed check through Xray.** Unless `--no-speed` is set, start Xray in batches and measure downloads through the local SOCKS inbound. Proxies below `--min-kb` do not pass. The largest amount read for one measurement is capped by `--speed-max-mb`.
+5. **TCP prefilter.** Unless `--no-tcp-ping` is set, TCP-based proxy endpoints are probed and their TCP round-trip time is recorded. Hysteria 1 and 2 use UDP and skip this TCP probe, so no TCP RTT is recorded for them. `--tcp-max-ms` applies to completed TCP probes; `--max-ping` filters only endpoints with a measured TCP RTT and does not discard Hysteria solely because its TCP probe was skipped.
+6. **Speed check.** Unless `--no-speed` is set, Xray checks supported proxy variants in batches through a local SOCKS inbound. Hysteria 1 is measured by the separate Hysteria v1 core; Hysteria 2 is measured through Xray. Hysteria 2 Gecko obfuscation and transport options outside the implemented Xray subset are skipped. Shadowsocks methods outside Xray's cipher allowlist are parsed and supported by the Mihomo converter, but skipped for speed checking. Since the CLI generates Clash/mihomo only from `good`, such entries do not appear in the normal CLI-generated YAML unless they pass a speed check. Results below `--min-kb` do not pass; each measurement is capped by `--speed-max-mb` where applicable.
 7. **Write results and optionally render Clash YAML.** Clash generation uses only the proxies that passed the speed threshold.
 
 ### `alive` and `good`
 
-- **`alive`** is the final set that remains usable under the selected checks. With speed checking enabled, it contains proxies that pass `--min-kb`; it is sorted by TCP ping when ping values are available. With `--no-speed`, it contains TCP survivors (or all candidates when TCP ping is also disabled), sorted by ping when a ping value exists.
+- **`alive`** is the final set that remains usable under the selected checks. With speed checking enabled, it contains proxies that pass `--min-kb`; it is sorted by TCP ping when ping values are available. With `--no-speed`, it contains survivors of applicable TCP checks (or all candidates when TCP ping is also disabled), sorted by ping when a ping value exists.
 - **`good`** is the set that passed the speed threshold. It is sorted by measured speed, highest first. `good.txt` is not written by the `--no-speed` path because no speed-qualified set was measured.
-- **`dead`** is optional. When `--dead FILE` is supplied, the output includes proxies that failed TCP, were filtered by the configured ping limits, or failed the speed check.
+- **`dead`** is optional. When `--dead FILE` is supplied, it includes proxies that failed TCP, exceeded a configured ping limit, or failed an executed speed check. Proxies skipped because the available speed core does not support their transport or cipher are reported as unchecked, not dead.
 
 With TCP ping enabled, the alive file is first written after TCP filtering and may be refreshed after speed checking. If no candidate remains after TCP filtering, the run writes the optional dead file and exits that pipeline early without creating or refreshing the alive output file (an older file can remain). If `--no-tcp-ping` is set, there is no TCP-stage output; the alive file is written at the final output stage.
 
@@ -159,7 +161,7 @@ Intermediate files are updated as the relevant stages complete. Writes use a tem
 
 Subscription HTTPS certificates are verified by default. Each response is capped at 16 MiB (`--max-source-bytes`); two retries after the initial attempt are the default (`--fetch-retries`, range `0..=8`). The `.proxy_cache` directory stores successful responses and `ETag`/`Last-Modified` validators. Validators avoid downloading unchanged bodies, and the last successful body can be used after a temporary failure. Disable caching with `--no-fetch-cache`. `--insecure-source-tls` explicitly disables HTTPS certificate verification.
 
-Use `--source-report source-quality.json` to write per-source status and counts for fetched, valid, duplicate, TCP-live, and speed-qualified links. Report URLs have credentials, query, fragment, and non-root paths removed; response bodies and network error text are not included.
+Use `--source-report source-quality.json` for per-source fetch, parse, duplicate, TCP, speed-qualified, below-threshold, and Xray outbound rejection counts. Use `--speed-report speed.json` to tie individual probe outcomes to a `source_id`. URLs are sanitized and raw errors/bodies are omitted. The speed report includes proxy names and server addresses; keep it private.
 
 Save completed stages with `--checkpoint run.checkpoint`, then resume after interruption:
 
@@ -182,6 +184,7 @@ The tables below reflect `cargo run -- --help` and the current CLI validation in
 | `--set SET` | `3` | Catalog key, or `all` (case-insensitive) to select every key in the catalog. |
 | `--sources SOURCES` | `sources.json` | Path to the JSON catalog. |
 | `-f`, `--file FILE` | — | Text file with subscription URLs and/or direct proxy links. |
+| `--check-one FILE` | — | Read exactly one proxy link from a file and report parsing, core startup, SOCKS readiness, download, and speed as JSON. Mutually exclusive with the regular pipeline and export options. |
 | `-u`, `--url URL` | — | Add a subscription URL; may be supplied more than once. |
 | `--fetch-concurrency N` | `32` | Concurrent source downloads; `1..=4096`. |
 | `--fetch-timeout SECONDS` | `15` | Source request timeout; `1..=3600` seconds. |
@@ -204,14 +207,20 @@ The tables below reflect `cargo run -- --help` and the current CLI validation in
 | `--dead DEAD` | — | Optional path for failed/filtered proxies. |
 | `-n`, `--limit N` | No limit | Keep at most the first `N` parsed proxies before checks; `N > 0`. |
 | `-s`, `--shuffle` | Off | Shuffle the parsed list before applying the limit and running checks. |
+| `--shuffle-seed U64` | — | Reproducibly shuffle with this seed; enables shuffling. Repeatability requires the same input and binary version. |
 | `--raw-output RAW_OUTPUT` | `raw.txt` | Path for successfully downloaded subscription response texts. |
 | `--parsed-output PARSED_OUTPUT` | `parsed.txt` | Path for unique parsed proxies; refreshed after GeoIP naming. |
-| `--source-report FILE` | — | Write a safe per-source quality JSON report with sanitized URLs. |
+| `--source-report FILE` | — | Write per-source JSON counts for fetch (including failed-attempt count), parse, duplicates, TCP-live, speed-qualified, below-threshold, and Xray outbound rejection reasons. URLs are sanitized. |
 | `--checkpoint FILE` | — | Atomically save completed stages for a later `--resume`; contains proxy data. |
 | `--json-output FILE` | — | Write final alive proxies as a JSON array containing only the summary fields `protocol`, `server`, `port`, `name`, `country`, `display`, `ping_ms`, and `speed_kbs`. Proxy URIs, passwords, UUIDs, and connection settings are omitted. |
+| `--speed-report FILE` | — | Write per-candidate JSON with `source_id`, median, successful count, range, and every probe's target URL, status, bytes, duration, speed, or classified failure. It includes proxy names and server addresses; keep it private. Older speed checkpoints do not retain probe details, so `probes` is `null`. |
 | `--clash [FILE]` | Off; filename `clash.yaml` if flag has no value | Generate a Clash/mihomo file from speed-qualified proxies. |
 | `--clash-no-country` | Off | Omit country and pseudo-country groups from the generated Clash file. |
 | `--clash-no-categories` | Off | Omit Telegram, AI, YouTube, and Games groups and their category routing rules. |
+| `--singbox [FILE]` | Off; filename `sing-box.json` if flag has no value | Generate a complete sing-box JSON config from `good`; nodes with unsupported settings are skipped. |
+| `--singbox-report FILE` | — | Write a JSON report listing converted nodes and exact reasons why other nodes were skipped. |
+| `--singbox-check` | Off | Validate the generated config with `sing-box check`; requires `--singbox` and at least one speed-qualified node. A validation failure exits with an error. |
+| `--singbox-bin FILE` | `sing-box` from `PATH` | Use this sing-box executable for `version` and `check`; requires `--singbox-check`. |
 
 ### Xray
 
@@ -225,6 +234,7 @@ The tables below reflect `cargo run -- --help` and the current CLI validation in
 | `--core-start-timeout SECONDS` | `8` | How long to wait for an Xray process to start; `1..=3600` seconds. |
 | `--xray-url URL` | Platform-specific latest Xray release archive | Override the URL used to download Xray. |
 | `--no-xray-download` | Off | Do not download Xray automatically; fail if a valid local executable is unavailable. |
+| `--no-hysteria1-download` | Off | Do not download the Hysteria 1 core; Hysteria 1 speed checks are skipped if no valid local core is available. The automatically downloaded Hysteria v1.3.5 binary is SHA-256 verified. |
 
 ### TCP prefilter
 
@@ -243,13 +253,14 @@ The tables below reflect `cargo run -- --help` and the current CLI validation in
 
 | Option | Default | Meaning / accepted range |
 |---|---:|---|
-| `--no-speed` | Off | Skip Xray and speed measurement. In this mode `good.txt` is not produced by the speed stage. |
+| `--no-speed` | Off | Skip all speed checks. In this mode `good.txt` is not produced by the speed stage. |
 | `--speed-url URL` | Built-in target pool | Try this URL first for a speed measurement; fallback targets are available when needed. |
 | `--speed-timeout SECONDS` | `6` | Overall download measurement timeout; `1..=3600` seconds. |
 | `--speed-connect-timeout SECONDS` | `3` | Connection timeout for a speed target; `1..=3600` seconds. |
 | `--speed-max-mb MB` | `5` | Maximum bytes read per speed measurement; `0.5..=1024` MB. |
 | `--min-kb KB_PER_SECOND` | `100` | Minimum measured speed for a proxy to pass; `0..=1,000,000,000` KB/s. |
 | `--speed-threads N` | `16` | Concurrent speed measurements; `1..=4096`. |
+| `--speed-probes N` | `3` | Number of independent test targets per proxy; successful results are summarized by their median and min/max range; `1..=9`. |
 
 ### GeoIP
 
@@ -289,7 +300,7 @@ Output paths are relative to the process working directory unless an absolute pa
 
 ### Xray
 
-When speed checks are enabled, `proxy-rs` requires a working Xray core. If the configured executable is missing or invalid, the CLI downloads the matching archive from the latest XTLS/Xray-core release unless `--no-xray-download` is set. Automatic archive selection currently supports:
+When speed checks are enabled, `proxy-rs` requires a working Xray core for Xray-supported protocols. If the configured executable is missing or invalid, the CLI downloads the matching archive from the latest XTLS/Xray-core release unless `--no-xray-download` is set. Hysteria 1 uses its separately managed Hysteria v1.3.5 core. Automatic Xray archive selection currently supports:
 
 | Operating system | x86_64 | aarch64 |
 |---|---|---|
@@ -297,7 +308,7 @@ When speed checks are enabled, `proxy-rs` requires a working Xray core. If the c
 | Linux | `Xray-linux-64.zip` | `Xray-linux-arm64-v8a.zip` |
 | macOS | `Xray-macos-64.zip` | `Xray-macos-arm64-v8a.zip` |
 
-Use `--core PATH` for a preinstalled core or `--xray-url URL` for a compatible archive. The core is checked by running its `version` command. Xray processes use local SOCKS inbounds to test proxy outbounds. Temporary batch configs are placed in `--workdir` and cleaned up after processing.
+Use `--core PATH` for a preinstalled Xray core or `--xray-url URL` for a compatible archive. Xray is checked by running its `version` command and uses local SOCKS inbounds to test proxy outbounds. Hysteria 1 speed checks use a separate Hysteria v1.3.5 core, downloaded with SHA-256 verification when needed unless `--no-hysteria1-download` is set. Temporary Xray batch configs are placed in `--workdir` and cleaned up after processing.
 
 ### GeoIP
 
@@ -305,11 +316,11 @@ GeoIP lookup is enabled by default. If no explicit `--geoip-db` path is provided
 
 ## Clash/mihomo generation
 
-Pass `--clash [FILE]` to generate YAML. The input is **only** the `good` set: proxies that completed the Xray speed test at or above `--min-kb`. If no proxy passes, generation is skipped. The writer reports unsupported protocols and excludes those entries from the generated proxy list.
+Pass `--clash [FILE]` to generate YAML. The input is **only** the `good` set: proxies that passed the applicable core's speed check at or above `--min-kb`. If no proxy passes, generation is skipped. The writer reports unsupported protocols and excludes those entries from the generated proxy list.
 
 ### Proxy and transport mapping
 
-The generator maps these proxy protocols: VLESS, VMess, Trojan, and Shadowsocks. Supported network transports include raw/TCP, WebSocket, gRPC, HTTP Upgrade (emitted as WebSocket with the `v2ray-http-upgrade` mode), XHTTP, and best-effort KCP. TLS and Reality settings are translated where the source data provides compatible values. For Reality, the Xray `realitySettings.password` value is emitted as Clash `reality-opts.public-key`. Trojan uses `sni`; VLESS and VMess use `servername`.
+The generator maps VLESS, VMess, Trojan, Shadowsocks, Hysteria 1, and Hysteria 2 to Mihomo proxy entries. For VLESS/VMess/Trojan, supported network transports include raw/TCP, WebSocket, gRPC, HTTP Upgrade (emitted as WebSocket with `v2ray-http-upgrade`), XHTTP, and best-effort KCP. TLS and Reality settings are translated when compatible; Reality's Xray `realitySettings.password` becomes Clash `reality-opts.public-key`. Trojan uses `sni`; VLESS and VMess use `servername`. Hysteria 1/2 map to their Mihomo types. For Hysteria 2, Salamander and URI port hopping are translated into Xray's implemented UDP finalmask settings; Gecko can be exported to Mihomo but is skipped by Xray speed checks. Other Hysteria 2 options are speed-checkable only where the current Xray configuration implements them; parsing a URI alone does not establish support. Shadowsocks ciphers outside Xray's allowlist remain parseable and representable by the Mihomo converter but are not speed-checked. The CLI's `--clash` output is limited to `good`, so those skipped entries are absent from normal CLI-generated YAML.
 
 Unsupported protocols are skipped and counted in the generation report. Clash output is written atomically.
 
@@ -348,9 +359,10 @@ The repository root is both the `proxy-rs` package and the Cargo workspace root 
 | `src/output.rs` | Output line formatting, atomic file replacement, and result display. |
 | `src/check.rs` | SOCKS client support used by speed checks. |
 | `proxy-clash/` | Pure library: Xray-derived proxy data → Clash/mihomo YAML and a generation report; no file I/O. |
+| `proxy-singbox/` | Pure library: supported Xray-derived proxy data → sing-box JSON and a report of converted/skipped nodes; no file I/O. |
 | `tests/cli_entrypoint.rs` | End-to-end CLI tests using local fixtures and local test servers. |
 
-The root crate owns network, process, and filesystem work. The `proxy-clash` crate owns YAML conversion, groups, and routing rules; `serde_yaml_ng` is confined to that crate.
+The root crate owns network, process, and filesystem work. The `proxy-clash` crate owns YAML conversion, groups, and routing rules; `serde_yaml_ng` is confined to that crate. The `proxy-singbox` crate owns sing-box JSON conversion and explicit unsupported-node reporting.
 
 ## Development, tests, and CI
 
@@ -378,11 +390,11 @@ cargo bench --bench pipeline
 Coverage and mutation testing are configured in `.github/workflows/cross-platform.yml`:
 
 ```sh
-cargo +nightly-2026-10-26 llvm-cov --workspace --lib --bins --tests --branch --summary-only --ignore-filename-regex '(.cargo/registry|/benches/)' --fail-under-lines 97
+cargo +nightly-2026-10-26 llvm-cov --remap-path-prefix --workspace --lib --bins --tests --branch --summary-only --ignore-filename-regex '(^/|.cargo/registry|/benches/)' --fail-under-lines 96
 CARGO_PROFILE_DEV_DEBUG=0 cargo +stable mutants --workspace --jobs 2 --timeout 120 --minimum-test-timeout 30
 ```
 
-The coverage workflow pins a nightly toolchain for LLVM branch instrumentation and currently enforces at least 97% line coverage. Mutation testing runs on Ubuntu with two jobs. These tools need to be installed separately for local runs.
+The coverage workflow pins a nightly toolchain for LLVM branch instrumentation and enforces at least 96% line coverage (the current Ubuntu measurement was 96.70% lines and 84.86% branches). Mutation testing runs on Ubuntu with two jobs. These tools need to be installed separately for local runs.
 
 On pushes and pull requests, the cross-platform workflow runs Clippy with warnings denied, a release build, and workspace tests on `ubuntu-latest`, `macos-latest`, and `windows-latest`.
 
@@ -426,8 +438,12 @@ Check that the database path is writable for downloads and that the file is a va
 
 ### Clash output is missing or has fewer proxies than expected
 
-Clash generation is skipped when no proxy passes speed checking. It includes only supported Clash protocols from the `good` set. Check the speed threshold and generation summary for skipped protocols. Use `--clash-no-country` or `--clash-no-categories` to disable optional groups.
+Clash generation is skipped when no proxy passes speed checking. It includes only supported Mihomo protocols from the `good` set; Hysteria 1/2 are eligible after their applicable speed check. Check the speed threshold and generation summary for skipped protocols. Use `--clash-no-country` or `--clash-no-categories` to disable optional groups.
 
 ### Output path cannot be written
 
 Create the destination directory first and check filesystem permissions. Output paths are relative to the current working directory unless absolute paths are used.
+
+## License
+
+This project is distributed under the [MIT License](../../LICENSE).

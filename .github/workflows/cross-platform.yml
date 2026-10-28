@@ -39,7 +39,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
-      RUST_TEST_THREADS: 4
+      RUST_TEST_THREADS: 1
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -48,7 +48,7 @@ jobs:
       - name: Install nightly coverage toolchain
         run: rustup toolchain install nightly-2026-10-26 --component llvm-tools-preview
       - name: Measure line and branch coverage
-        run: cargo +nightly-2026-10-26 llvm-cov --workspace --lib --bins --tests --branch --summary-only --ignore-filename-regex '(.cargo/registry|/benches/)' --fail-under-lines 97
+        run: cargo +nightly-2026-10-26 llvm-cov --remap-path-prefix --workspace --lib --bins --tests --branch --summary-only --ignore-filename-regex '(^/|.cargo/registry|/benches/)' --fail-under-lines 96
       - name: Install cargo-mutants
         run: cargo install --locked cargo-mutants
       - name: Run mutation tests

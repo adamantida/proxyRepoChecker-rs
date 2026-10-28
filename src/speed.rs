@@ -1,5 +1,6 @@
 use crate::check::socks_client;
 use rand::seq::SliceRandom;
+use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::time::Duration;
 use std::time::Instant;
@@ -43,9 +44,29 @@ fn target_pool(primary: Option<&str>) -> Vec<String> {
     pool
 }
 
+fn detailed_target_pool(primary: Option<&str>, limit: usize) -> Vec<String> {
+    let mut pool = Vec::with_capacity(limit.min(DEFAULT_TARGETS.len() + 1));
+    if let Some(url) = primary.filter(|url| !url.is_empty()) {
+        pool.push(url.to_string());
+    }
+    for target in DEFAULT_TARGETS {
+        if pool.len() >= limit {
+            break;
+        }
+        if !pool.iter().any(|existing| existing == target) {
+            pool.push((*target).to_string());
+        }
+    }
+    pool.truncate(limit);
+    pool
+}
+
 fn positive_speed(total: u64, secs: f64) -> Option<f64> {
+    if !secs.is_finite() || secs <= 0.0 {
+        return None;
+    }
     let kbs = (total as f64 / 1024.0) / secs;
-    if kbs <= 0.0 {
+    if !kbs.is_finite() || kbs <= 0.0 {
         None
     } else {
         Some(kbs)
@@ -133,6 +154,328 @@ pub async fn measure(
     .await
 }
 
+/// Summary of a multi-target speed measurement. Speeds are in KiB/s, matching
+/// the existing [`measure`] API (bytes / 1024 / seconds).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MeasurementSummary {
+    /// Median speed among successful probes, in KiB/s. Zero when none succeeded.
+    pub median_kbs: f64,
+    /// Number of targets that returned at least 1 KiB and a finite positive speed.
+    pub successful_probes: usize,
+    /// Lowest successful probe speed in KiB/s; `None` when there were no successes.
+    pub min_kbs: Option<f64>,
+    /// Highest successful probe speed in KiB/s; `None` when there were no successes.
+    pub max_kbs: Option<f64>,
+}
+
+/// Outcome of one speed-test target. Failure details deliberately contain no
+/// response body, request headers, or error text that could expose credentials.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProbeResult {
+    /// URL tested for this probe.
+    pub target_url: String,
+    /// Whether the response passed the minimum-size and speed checks.
+    pub status: ProbeStatus,
+    /// Number of response bytes consumed, capped by the configured limit.
+    pub transferred_bytes: u64,
+    /// Wall-clock duration of this probe in seconds.
+    pub elapsed_seconds: f64,
+    /// Measured speed in KiB/s; present only for successful probes.
+    pub speed_kbs: Option<f64>,
+    /// Safe, structured failure classification; absent on success.
+    pub failure_reason: Option<ProbeFailure>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProbeStatus {
+    Success,
+    Failure,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProbeFailure {
+    HttpStatus { status: u16 },
+    Timeout,
+    Request,
+    Body,
+    TooSmall,
+    InvalidSpeed,
+}
+
+/// Measures a proxy against up to `target_count` distinct targets in a stable
+/// order. A non-empty `primary` URL is first, followed by built-in targets in
+/// declaration order. Each target is probed at most once. Failed, empty, timed
+/// out, and sub-1-KiB responses are excluded. Returns a zero median and empty
+/// range if no probe succeeds. All reported speeds use KiB/s (bytes / 1024 / s).
+pub async fn measure_detailed(
+    port: u16,
+    primary: Option<&str>,
+    conn_timeout_s: f64,
+    timeout_s: f64,
+    max_mb: f64,
+    target_count: usize,
+) -> MeasurementSummary {
+    let probes = measure_detailed_probes(
+        port,
+        primary,
+        conn_timeout_s,
+        timeout_s,
+        max_mb,
+        target_count,
+    )
+    .await;
+    summarize_probe_results(&probes)
+}
+
+/// Calculate median/range statistics from retained per-target results.
+pub fn summarize_probe_results(probes: &[ProbeResult]) -> MeasurementSummary {
+    let mut speeds: Vec<f64> = probes
+        .iter()
+        .filter(|probe| probe.status == ProbeStatus::Success)
+        .filter_map(|probe| probe.speed_kbs)
+        .filter(|speed| speed.is_finite() && *speed > 0.0)
+        .collect();
+    if speeds.is_empty() {
+        return MeasurementSummary::default();
+    }
+    speeds.sort_by(f64::total_cmp);
+    let middle = speeds.len() / 2;
+    let median_kbs = if speeds.len().is_multiple_of(2) {
+        speeds[middle - 1] / 2.0 + speeds[middle] / 2.0
+    } else {
+        speeds[middle]
+    };
+    MeasurementSummary {
+        median_kbs,
+        successful_probes: speeds.len(),
+        min_kbs: speeds.first().copied(),
+        max_kbs: speeds.last().copied(),
+    }
+}
+
+/// Measures each selected target and retains its individual outcome.
+///
+/// This returns one serializable [`ProbeResult`] per target, including failed
+/// probes. Error details are intentionally classified rather than exposing
+/// reqwest error strings or response bodies.
+pub async fn measure_detailed_probes(
+    port: u16,
+    primary: Option<&str>,
+    conn_timeout_s: f64,
+    timeout_s: f64,
+    max_mb: f64,
+    target_count: usize,
+) -> Vec<ProbeResult> {
+    let conn_timeout = safe_duration(conn_timeout_s, 1.0);
+    let timeout = safe_duration(timeout_s, 1.0);
+    let max_bytes = ((max_mb.max(0.5)) * 1024.0 * 1024.0) as u64;
+    let targets = detailed_target_pool(primary, target_count);
+    let client = match socks_client(port, conn_timeout) {
+        Ok(client) => client,
+        Err(_) => {
+            return targets
+                .into_iter()
+                .map(|target_url| ProbeResult::failure(target_url, 0, 0.0, ProbeFailure::Request))
+                .collect();
+        }
+    };
+    let mut results = Vec::with_capacity(targets.len());
+    for target in targets {
+        results.push(try_download_detailed(&client, target, timeout, max_bytes).await);
+    }
+    results
+}
+
+#[allow(dead_code)] // Constructors are reached by the detailed probe API.
+impl ProbeResult {
+    fn success(
+        target_url: String,
+        transferred_bytes: u64,
+        elapsed_seconds: f64,
+        speed_kbs: f64,
+    ) -> Self {
+        Self {
+            target_url,
+            status: ProbeStatus::Success,
+            transferred_bytes,
+            elapsed_seconds,
+            speed_kbs: Some(speed_kbs),
+            failure_reason: None,
+        }
+    }
+
+    fn failure(
+        target_url: String,
+        transferred_bytes: u64,
+        elapsed_seconds: f64,
+        failure_reason: ProbeFailure,
+    ) -> Self {
+        Self {
+            target_url,
+            status: ProbeStatus::Failure,
+            transferred_bytes,
+            elapsed_seconds,
+            speed_kbs: None,
+            failure_reason: Some(failure_reason),
+        }
+    }
+}
+
+#[allow(dead_code)] // Called by measure_detailed_probes.
+async fn try_download_detailed(
+    client: &reqwest::Client,
+    target_url: String,
+    timeout: Duration,
+    max_bytes: u64,
+) -> ProbeResult {
+    let start = Instant::now();
+    let elapsed = |start: Instant| start.elapsed().as_secs_f64();
+    let request = client.get(&target_url).timeout(timeout).send();
+    let response = match timeout_future(request, timeout).await {
+        Err(_) => {
+            return ProbeResult::failure(target_url, 0, elapsed(start), ProbeFailure::Timeout);
+        }
+        Ok(Err(error)) if error.is_timeout() => {
+            return ProbeResult::failure(target_url, 0, elapsed(start), ProbeFailure::Timeout);
+        }
+        Ok(Err(_)) => {
+            return ProbeResult::failure(target_url, 0, elapsed(start), ProbeFailure::Request);
+        }
+        Ok(Ok(response)) => response,
+    };
+    if !response.status().is_success() {
+        return ProbeResult::failure(
+            target_url,
+            0,
+            elapsed(start),
+            ProbeFailure::HttpStatus {
+                status: response.status().as_u16(),
+            },
+        );
+    }
+
+    let mut response = response;
+    let mut transferred_bytes = 0_u64;
+    while transferred_bytes < max_bytes {
+        let Some(remaining) = remaining_time(start, timeout) else {
+            return ProbeResult::failure(
+                target_url,
+                transferred_bytes,
+                elapsed(start),
+                ProbeFailure::Timeout,
+            );
+        };
+        match timeout_future(response.chunk(), remaining).await {
+            Err(_) => {
+                return ProbeResult::failure(
+                    target_url,
+                    transferred_bytes,
+                    elapsed(start),
+                    ProbeFailure::Timeout,
+                );
+            }
+            Ok(Err(error)) if error.is_timeout() => {
+                return ProbeResult::failure(
+                    target_url,
+                    transferred_bytes,
+                    elapsed(start),
+                    ProbeFailure::Timeout,
+                );
+            }
+            Ok(Err(_)) => {
+                return ProbeResult::failure(
+                    target_url,
+                    transferred_bytes,
+                    elapsed(start),
+                    ProbeFailure::Body,
+                );
+            }
+            Ok(Ok(None)) => break,
+            Ok(Ok(Some(chunk))) => {
+                let remaining_bytes = max_bytes.saturating_sub(transferred_bytes);
+                transferred_bytes += (chunk.len() as u64).min(remaining_bytes);
+            }
+        }
+    }
+
+    let elapsed_seconds = elapsed(start);
+    if transferred_bytes < 1024 {
+        return ProbeResult::failure(
+            target_url,
+            transferred_bytes,
+            elapsed_seconds,
+            ProbeFailure::TooSmall,
+        );
+    }
+    match positive_speed(transferred_bytes, elapsed_seconds) {
+        Some(speed_kbs) => {
+            ProbeResult::success(target_url, transferred_bytes, elapsed_seconds, speed_kbs)
+        }
+        None => ProbeResult::failure(
+            target_url,
+            transferred_bytes,
+            elapsed_seconds,
+            ProbeFailure::InvalidSpeed,
+        ),
+    }
+}
+
+#[allow(dead_code)] // Called from measure_detailed.
+fn safe_duration(seconds: f64, minimum_seconds: f64) -> Duration {
+    let seconds = if seconds.is_finite() {
+        seconds.max(minimum_seconds)
+    } else {
+        minimum_seconds
+    };
+    // Bound huge but finite inputs too; Duration::from_secs_f64 panics when
+    // the input rounds beyond its representable range.
+    Duration::from_secs_f64(seconds.min(365.0 * 24.0 * 60.0 * 60.0))
+}
+
+#[allow(dead_code)] // Shared implementation for measure_detailed.
+async fn measure_targets<F, Fut>(
+    targets: Vec<String>,
+    timeout: Duration,
+    mut download: F,
+) -> MeasurementSummary
+where
+    F: FnMut(String) -> Fut,
+    Fut: Future<Output = Option<(u64, f64)>>,
+{
+    let mut speeds = Vec::with_capacity(targets.len());
+    for target in targets {
+        let result = timeout_future(download(target), timeout).await;
+        let Ok(Some((bytes, seconds))) = result else {
+            continue;
+        };
+        if bytes < 1024 {
+            continue;
+        }
+        if let Some(speed) = positive_speed(bytes, seconds) {
+            speeds.push(speed);
+        }
+    }
+
+    if speeds.is_empty() {
+        return MeasurementSummary::default();
+    }
+    speeds.sort_by(f64::total_cmp);
+    let middle = speeds.len() / 2;
+    let median_kbs = if speeds.len() % 2 == 0 {
+        speeds[middle - 1] / 2.0 + speeds[middle] / 2.0
+    } else {
+        speeds[middle]
+    };
+    MeasurementSummary {
+        median_kbs,
+        successful_probes: speeds.len(),
+        min_kbs: speeds.first().copied(),
+        max_kbs: speeds.last().copied(),
+    }
+}
+
 async fn measure_with_client(
     client: anyhow::Result<reqwest::Client>,
     primary: Option<&str>,
@@ -174,6 +517,181 @@ where
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn detailed_targets_keep_a_stable_order_and_deduplicate_primary() {
+        let primary = DEFAULT_TARGETS[1];
+        let targets = detailed_target_pool(Some(primary), 4);
+
+        assert_eq!(targets[0], primary);
+        assert_eq!(targets[1], DEFAULT_TARGETS[0]);
+        assert_eq!(targets[2], DEFAULT_TARGETS[2]);
+        assert_eq!(targets[3], DEFAULT_TARGETS[3]);
+        assert_eq!(detailed_target_pool(None, 2), DEFAULT_TARGETS[..2]);
+        assert!(detailed_target_pool(Some("primary"), 0).is_empty());
+    }
+
+    #[test]
+    fn probe_result_serializes_success_and_safe_failure_details() {
+        let success = ProbeResult::success("https://example.test/data".into(), 2048, 0.5, 4.0);
+        let failure = ProbeResult::failure(
+            "https://example.test/data".into(),
+            0,
+            0.1,
+            ProbeFailure::HttpStatus { status: 503 },
+        );
+        let success_json = serde_json::to_value(&success).unwrap();
+        let failure_json = serde_json::to_value(&failure).unwrap();
+
+        assert_eq!(success_json["target_url"], "https://example.test/data");
+        assert_eq!(success_json["status"], "success");
+        assert_eq!(success_json["transferred_bytes"], 2048);
+        assert_eq!(success_json["speed_kbs"], 4.0);
+        assert!(success_json["failure_reason"].is_null());
+        assert_eq!(failure_json["status"], "failure");
+        assert_eq!(failure_json["failure_reason"]["kind"], "http_status");
+        assert_eq!(failure_json["failure_reason"]["status"], 503);
+        assert!(failure_json["speed_kbs"].is_null());
+        assert!(!failure_json.to_string().contains("error text"));
+    }
+
+    #[tokio::test]
+    async fn detailed_probe_classifies_http_status_and_small_body() {
+        let (status_url, status_server) = serve_once(
+            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .to_vec(),
+        )
+        .await;
+        let (small_url, small_server) = serve_once(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntiny".to_vec(),
+        )
+        .await;
+        let client = reqwest::Client::builder().http1_only().build().unwrap();
+
+        let status = try_download_detailed(&client, status_url, Duration::from_secs(1), 4096).await;
+        let small = try_download_detailed(&client, small_url, Duration::from_secs(1), 4096).await;
+        status_server.await.unwrap();
+        small_server.await.unwrap();
+
+        assert_eq!(status.status, ProbeStatus::Failure);
+        assert_eq!(
+            status.failure_reason,
+            Some(ProbeFailure::HttpStatus { status: 503 })
+        );
+        assert_eq!(small.failure_reason, Some(ProbeFailure::TooSmall));
+        assert_eq!(small.transferred_bytes, 4);
+        assert!(status.elapsed_seconds.is_finite());
+        assert!(small.elapsed_seconds.is_finite());
+    }
+
+    #[tokio::test]
+    async fn detailed_probe_records_successful_transfer_and_speed() {
+        let body = vec![b'x'; 2048];
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let mut response = response.into_bytes();
+        response.extend_from_slice(&body);
+        let (url, server) = serve_once(response).await;
+        let client = reqwest::Client::builder().http1_only().build().unwrap();
+
+        let result =
+            try_download_detailed(&client, url.clone(), Duration::from_secs(1), 4096).await;
+        server.await.unwrap();
+
+        assert_eq!(result.target_url, url);
+        assert_eq!(result.status, ProbeStatus::Success);
+        assert_eq!(result.transferred_bytes, 2048);
+        assert!(result.elapsed_seconds > 0.0);
+        assert!(result.speed_kbs.unwrap() > 0.0);
+        assert_eq!(result.failure_reason, None);
+    }
+
+    #[tokio::test]
+    async fn detailed_probe_classifies_timeout_body_and_request_failures() {
+        let (timeout_url, timeout_server) =
+            serve_slow_body(b"x", b"y", Duration::from_millis(100)).await;
+        let (body_url, body_server) = serve_once(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\nConnection: close\r\n\r\nshort".to_vec(),
+        )
+        .await;
+        let client = reqwest::Client::builder().http1_only().build().unwrap();
+
+        let timeout =
+            try_download_detailed(&client, timeout_url, Duration::from_millis(20), 4096).await;
+        let body = try_download_detailed(&client, body_url, Duration::from_secs(1), 4096).await;
+        let request =
+            try_download_detailed(&client, "invalid url".into(), Duration::from_secs(1), 4096)
+                .await;
+        timeout_server.await.unwrap();
+        body_server.await.unwrap();
+
+        assert_eq!(timeout.failure_reason, Some(ProbeFailure::Timeout));
+        assert_eq!(body.failure_reason, Some(ProbeFailure::Body));
+        assert_eq!(body.transferred_bytes, 5);
+        assert_eq!(request.failure_reason, Some(ProbeFailure::Request));
+    }
+
+    #[tokio::test]
+    async fn detailed_measurement_summarizes_multiple_local_http_probes() {
+        let mut targets = Vec::new();
+        let mut servers = Vec::new();
+        for &byte in b"abc" {
+            let body = vec![byte; 2048];
+            let mut response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .into_bytes();
+            response.extend_from_slice(&body);
+            let (url, server) = serve_once(response).await;
+            targets.push(url);
+            servers.push(server);
+        }
+        let client = reqwest::Client::builder().http1_only().build().unwrap();
+
+        let summary = measure_targets(targets, Duration::from_secs(2), |url| {
+            let client = &client;
+            async move {
+                try_download(
+                    client,
+                    &url,
+                    Duration::from_secs(1),
+                    Duration::from_secs(2),
+                    4096,
+                )
+                .await
+            }
+        })
+        .await;
+        for server in servers {
+            server.await.unwrap();
+        }
+
+        assert_eq!(summary.successful_probes, 3);
+        assert!(summary.median_kbs > 0.0);
+        assert!(summary.min_kbs.unwrap() <= summary.median_kbs);
+        assert!(summary.median_kbs <= summary.max_kbs.unwrap());
+    }
+
+    #[tokio::test]
+    async fn detailed_measurement_handles_empty_results_and_timed_out_probes() {
+        let summary = measure_targets(
+            vec!["small".into(), "timeout".into(), "invalid-speed".into()],
+            Duration::from_millis(10),
+            |target| async move {
+                match target.as_str() {
+                    "small" => Some((10, 1.0)),
+                    "timeout" => std::future::pending().await,
+                    _ => Some((2048, f64::INFINITY)),
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(summary, MeasurementSummary::default());
+    }
 
     #[test]
     fn remaining_time_returns_none_once_the_deadline_has_passed() {
@@ -619,7 +1137,6 @@ mod tests {
     async fn measure_rejects_a_self_signed_tls_certificate_through_socks5() {
         use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
         use std::sync::Arc;
-        use tokio::io::AsyncReadExt;
         use tokio_rustls::TlsAcceptor;
 
         let certificate = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
@@ -635,19 +1152,87 @@ mod tests {
         let tls_port = listener.local_addr().unwrap().port();
         let tls_server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
-            if let Ok(mut stream) = acceptor.accept(stream).await {
-                let mut request = [0; 1024];
-                let _ = stream.read(&mut request).await;
-            }
+            assert!(acceptor.accept(stream).await.is_err());
         });
         let (socks_port, socks_server) = socks5_once().await;
         let url = format!("https://localhost:{tls_port}/speed");
 
-        let speed = measure(socks_port, Some(&url), 1.0, 2.0, 0.5).await;
+        let proxy = reqwest::Proxy::all(format!("socks5h://127.0.0.1:{socks_port}")).unwrap();
+        let client = reqwest::Client::builder()
+            .proxy(proxy)
+            .http1_only()
+            .build()
+            .unwrap();
+        let result = try_download(
+            &client,
+            &url,
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            4096,
+        )
+        .await;
 
         tls_server.await.unwrap();
         socks_server.await.unwrap();
-        assert_eq!(speed, 0.0);
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn measure_downloads_over_https_when_local_certificate_is_trusted() {
+        use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
+        use std::sync::Arc;
+        use tokio::io::AsyncReadExt;
+        use tokio_rustls::TlsAcceptor;
+
+        let certificate = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+            certificate.key_pair.serialize_der(),
+        ));
+        let config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![certificate.cert.der().clone()], key)
+            .unwrap();
+        let acceptor = TlsAcceptor::from(Arc::new(config));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let tls_port = listener.local_addr().unwrap().port();
+        let body = vec![b't'; 2048];
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let tls_server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = acceptor.accept(stream).await.unwrap();
+            let mut request = [0; 1024];
+            let read = stream.read(&mut request).await.unwrap();
+            assert!(request[..read].starts_with(b"GET /speed HTTP/1.1"));
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(&body).await.unwrap();
+        });
+
+        let (socks_port, socks_server) = socks5_once().await;
+        let proxy = reqwest::Proxy::all(format!("socks5h://127.0.0.1:{socks_port}")).unwrap();
+        let trusted = reqwest::Certificate::from_der(certificate.cert.der().as_ref()).unwrap();
+        let client = reqwest::Client::builder()
+            .proxy(proxy)
+            .add_root_certificate(trusted)
+            .http1_only()
+            .build()
+            .unwrap();
+        let url = format!("https://localhost:{tls_port}/speed");
+
+        let speed = measure_with_client(
+            Ok(client),
+            Some(&url),
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            4096,
+        )
+        .await;
+
+        tls_server.await.unwrap();
+        socks_server.await.unwrap();
+        assert!(speed > 0.0);
     }
 
     #[tokio::test]

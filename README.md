@@ -4,7 +4,7 @@
 
 **Собирайте. Проверяйте. Используйте лучшие прокси.**
 
-Кроссплатформенный Rust CLI: от подписок и GeoIP до TCP-проверки, замера скорости через Xray и готового конфига Clash/mihomo.
+Кроссплатформенный Rust CLI: от подписок и GeoIP до подходящих TCP-проверок, замера скорости через Xray или Hysteria 1 и готового конфига Clash/mihomo.
 
 [![Cross-platform CI](https://img.shields.io/github/actions/workflow/status/adamantida/proxyRepoChecker-rs/cross-platform.yml?label=Cross-platform%20CI)](https://github.com/adamantida/proxyRepoChecker-rs/actions/workflows/cross-platform.yml)
 ![Rust 2021](https://img.shields.io/badge/Rust-2021-orange)
@@ -21,16 +21,18 @@ flowchart LR
     A[Подписки и файлы] --> B[Загрузка]
     B --> C[Парсинг и дедупликация]
     C --> D[GeoIP и имена]
-    D --> E[TCP-проверка]
-    E --> F[Замер скорости через Xray]
+    D --> E[TCP-проверка для TCP-прокси]
+    E --> F[Замер скорости подходящим ядром]
     F --> G[Текстовые результаты]
     F --> H[Clash / mihomo]
 ```
 
-- Обрабатывает `vless`, `vmess`, `trojan` и `shadowsocks`.
+- Разбирает `vless`, `vmess`, `trojan`, `ss` (Shadowsocks), Hysteria 1 и Hysteria 2; проверка скорости и экспорт зависят от возможностей соответствующего ядра.
 - Поддерживает локальные файлы, отдельные URL подписок и наборы источников из JSON.
 - Сохраняет промежуточные результаты атомарно, чтобы их можно было изучить после каждого этапа.
 - Генерирует Clash/mihomo из прокси, прошедших порог скорости.
+- Генерирует sing-box JSON с отдельным отчётом о неподдерживаемых параметрах; замеряет скорость по нескольким адресам и может показать медиану и разброс.
+- Диагностирует одну ссылку через `--check-one FILE`, включая запуск ядра, SOCKS-подключение и загрузку.
 - Собирается на Windows, macOS и Linux; Xray подбирается под ОС и архитектуру.
 
 ## Быстрый запуск
@@ -39,7 +41,7 @@ flowchart LR
 
 ```sh
 cargo build --workspace --release
-cargo run --release -- --set 3 -n 200 --shuffle
+cargo run --release -- --set 3 -n 200 --shuffle-seed 20261028
 ```
 
 Второй пример — короткий проверочный запуск на небольшом наборе с лимитом в 200 прокси. Полный список параметров:
@@ -47,6 +49,16 @@ cargo run --release -- --set 3 -n 200 --shuffle
 ```sh
 cargo run -- --help
 ```
+
+Для оценки стабильности замера и экспорта в sing-box можно запустить:
+
+```sh
+proxy-rs --file proxies.txt --speed-probes 5 --speed-report speed.json \
+  --singbox sing-box.json --singbox-report sing-box-skipped.json --singbox-check
+proxy-rs --check-one one-proxy.txt
+```
+
+`--singbox-check` валидирует созданный конфиг установленным sing-box (`sing-box check`). Если бинарник не находится в `PATH`, укажите его через `--singbox-bin FILE`. Отчёт скорости содержит результат каждой цели с очищенным URL, а отчёт источников показывает по каждой подписке причины ошибок и числа уникальных, TCP-живых и прошедших порог прокси.
 
 ### Сборка скриптом
 
@@ -78,7 +90,7 @@ proxy-rs --url 'https://example.org/sub' --fetch-retries 4 --max-source-bytes 33
 proxy-rs --resume --checkpoint run.checkpoint
 ```
 
-`--resume` требует `--checkpoint FILE`. JSON-отчёт содержит статусы и счётчики источников (получено, валидно, дубли, TCP-живые, прошли скорость); URL в нём очищаются от учётных данных, query, fragment и пути. Checkpoint хранит ссылки и результаты для продолжения, поэтому держите его как приватный файл.
+`--resume` требует `--checkpoint FILE`. JSON-отчёт содержит статусы, этапные счётчики и точные причины неподдержки по каждой подписке; URL в нём очищаются от учётных данных, query, fragment и пути. Checkpoint хранит ссылки и результаты для продолжения, поэтому держите его как приватный файл.
 
 ### Фильтры и JSON-результаты
 
@@ -100,6 +112,7 @@ cargo run --release -- --url 'https://example.org/sub' \
 | `good.txt` | Прокси, прошедшие порог `--min-kb` |
 | `dead.txt` | Отброшенные фильтрами или скоростной проверкой узлы, если задан `--dead` |
 | `clash.yaml` | Конфиг Clash/mihomo, если задан `--clash` и есть подходящие прокси |
+| `sing-box.json` | Конфиг sing-box, если задан `--singbox` и есть подходящие прокси |
 
 Пути меняются флагами CLI. Файлы результатов и локальные логи исключены из Git.
 
@@ -151,3 +164,7 @@ Push тега вида `vX.Y.Z`, совпадающего с версией в `
 - USDT: `[добавить адрес кошелька и сеть]`
 
 Пожертвования добровольны и предназначены для поддержки и развития проекта `proxy-rs`. Использование проекта не требует оплаты.
+
+## Лицензия
+
+Проект распространяется по лицензии [MIT](LICENSE).

@@ -1,7 +1,7 @@
 use crate::parse::Proxy;
 use anyhow::{Context, Result};
 use std::ffi::OsString;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -63,6 +63,47 @@ pub fn write_bytes_atomic_checked<F>(
 where
     F: FnOnce(&Path) -> Result<()>,
 {
+    write_bytes_atomic_checked_with(
+        path,
+        bytes,
+        unix_mode,
+        validate,
+        |file, bytes| file.write_all(bytes),
+        |file| file.sync_all(),
+        |path, mode| {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = (path, mode);
+                Ok(())
+            }
+        },
+        replace_file,
+    )
+}
+
+#[allow(clippy::too_many_arguments)] // Injected file operations keep I/O failures deterministic in tests.
+fn write_bytes_atomic_checked_with<F, W, S, P, R>(
+    path: &Path,
+    bytes: &[u8],
+    unix_mode: Option<u32>,
+    validate: F,
+    write: W,
+    sync: S,
+    set_mode: P,
+    replace: R,
+) -> Result<()>
+where
+    F: FnOnce(&Path) -> Result<()>,
+    W: FnOnce(&mut File, &[u8]) -> std::io::Result<()>,
+    S: FnOnce(&File) -> std::io::Result<()>,
+    P: FnOnce(&Path, u32) -> std::io::Result<()>,
+    R: FnOnce(&Path, &Path) -> std::io::Result<()>,
+{
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -95,20 +136,16 @@ where
     }
     let mut file = file.context("не удалось подобрать уникальное имя временного файла")?;
     let result = (|| -> Result<()> {
-        file.write_all(bytes)
+        write(&mut file, bytes)
             .with_context(|| format!("не удалось записать {}", tmp.display()))?;
-        file.sync_all()
-            .with_context(|| format!("не удалось синхронизировать {}", tmp.display()))?;
+        sync(&file).with_context(|| format!("не удалось синхронизировать {}", tmp.display()))?;
         drop(file);
-        #[cfg(unix)]
         if let Some(mode) = unix_mode {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))
+            set_mode(&tmp, mode)
                 .with_context(|| format!("не удалось установить права {}", tmp.display()))?;
         }
         validate(&tmp)?;
-        replace_file(&tmp, path)
-            .with_context(|| format!("не удалось заменить {}", path.display()))?;
+        replace(&tmp, path).with_context(|| format!("не удалось заменить {}", path.display()))?;
         Ok(())
     })();
     if result.is_err() {
@@ -122,29 +159,36 @@ fn replace_file(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::rename(from, to)
 }
 
+#[cfg(any(windows, test))]
+fn replace_file_flags() -> u32 {
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
+}
+
+#[cfg(any(windows, test))]
+fn replace_file_result<F>(succeeded: bool, error: F) -> std::io::Result<()>
+where
+    F: FnOnce() -> std::io::Error,
+{
+    if succeeded {
+        Ok(())
+    } else {
+        Err(error())
+    }
+}
+
 #[cfg(windows)]
 fn replace_file(from: &Path, to: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
-    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
-    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
     #[link(name = "kernel32")]
     extern "system" {
         fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
     }
     let from: Vec<u16> = from.as_os_str().encode_wide().chain(Some(0)).collect();
     let to: Vec<u16> = to.as_os_str().encode_wide().chain(Some(0)).collect();
-    let ok = unsafe {
-        MoveFileExW(
-            from.as_ptr(),
-            to.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if ok == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+    let ok = unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), replace_file_flags()) };
+    replace_file_result(ok != 0, std::io::Error::last_os_error)
 }
 
 pub fn print_top(items: &[Proxy], with_speed: bool) {
@@ -157,10 +201,18 @@ fn top_lines(items: &[Proxy], with_speed: bool) -> Vec<String> {
     if items.is_empty() {
         return vec!["   (пусто)".into()];
     }
-    let mut lines = vec![format!(
-        "   {:>6} {:>10}  {:<14} {:<12} адрес",
-        "ping", "speed", "имя", "протокол"
-    )];
+    let header = if with_speed {
+        format!(
+            "   {:>12} {:>15}  {:<16} {:<12} адрес",
+            "ping", "speed", "имя", "протокол"
+        )
+    } else {
+        format!(
+            "   {:>6} {:>10}  {:<14} {:<12} адрес",
+            "ping", "speed", "имя", "протокол"
+        )
+    };
+    let mut lines = vec![header];
     for p in items.iter().take(15) {
         let ping = p
             .ping
@@ -176,12 +228,46 @@ fn top_lines(items: &[Proxy], with_speed: bool) -> Vec<String> {
         } else {
             &p.display
         };
-        lines.push(format!(
-            "   {:>6} {:>10}  {:<14} {:<12} {}:{}",
-            ping, speed, name, p.proto, p.host, p.port
-        ));
+        if with_speed {
+            lines.push(format!(
+                "   {} {}  {:<16} {:<12} {}:{}",
+                fit_right_cell(&ping, 12),
+                fit_right_cell(&speed, 15),
+                fit_cell(name, 16),
+                fit_cell(p.proto, 12),
+                p.host,
+                p.port
+            ));
+        } else {
+            lines.push(format!(
+                "   {:>6} {:>10}  {:<14} {:<12} {}:{}",
+                ping, speed, name, p.proto, p.host, p.port
+            ));
+        }
     }
     lines
+}
+
+fn fit_cell(value: &str, width: usize) -> String {
+    let mut chars = value.chars();
+    let mut fitted: String = chars.by_ref().take(width).collect();
+    if chars.next().is_some() {
+        fitted = value.chars().take(width.saturating_sub(1)).collect();
+        fitted.push('…');
+    }
+    fitted
+}
+
+fn fit_right_cell(value: &str, width: usize) -> String {
+    let count = value.chars().count();
+    if count <= width {
+        return format!("{value:>width$}");
+    }
+    let suffix: String = value
+        .chars()
+        .skip(count.saturating_sub(width.saturating_sub(1)))
+        .collect();
+    format!("…{suffix}")
 }
 
 #[cfg(test)]
@@ -341,6 +427,12 @@ mod tests {
     }
 
     #[test]
+    fn fit_right_cell_truncates_long_unicode_values_from_the_left() {
+        assert_eq!(fit_right_cell("速度：非常快", 4), "…非常快");
+        assert_eq!(fit_right_cell("速度", 4), "  速度");
+    }
+
+    #[test]
     fn top_lines_formats_header_and_missing_ping_without_speed() {
         let item = proxy();
         let lines = top_lines(&[item], false);
@@ -381,6 +473,127 @@ mod tests {
 
         assert_eq!(std::fs::read(&path).unwrap(), b"new\0contents");
         assert!(dir.temp_files().is_empty());
+    }
+
+    #[test]
+    fn windows_replace_fallback_uses_both_flags_and_preserves_result_errors() {
+        assert_eq!(replace_file_flags(), 0x1 | 0x8);
+        assert!(
+            replace_file_result(true, || { std::io::Error::from(std::io::ErrorKind::Other) })
+                .is_ok()
+        );
+
+        let error = replace_file_result(false, || {
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied)
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn checked_writer_cleans_up_after_write_sync_and_permission_failures() {
+        let dir = TestDir::new();
+        let path = dir.path("existing.txt");
+        std::fs::write(&path, b"old").unwrap();
+
+        let write_error = write_bytes_atomic_checked_with(
+            &path,
+            b"new",
+            None,
+            validate_ok,
+            write_permission_denied,
+            sync_ok,
+            set_mode_ok,
+            replace_file,
+        )
+        .unwrap_err();
+        assert!(write_error.to_string().contains("не удалось записать"));
+
+        let sync_error = write_bytes_atomic_checked_with(
+            &path,
+            b"new",
+            None,
+            validate_ok,
+            write_ok,
+            sync_permission_denied,
+            set_mode_ok,
+            replace_file,
+        )
+        .unwrap_err();
+        assert!(sync_error
+            .to_string()
+            .contains("не удалось синхронизировать"));
+
+        #[cfg(unix)]
+        let mode_error = write_bytes_atomic_checked_with(
+            &path,
+            b"new",
+            Some(0o600),
+            validate_ok,
+            write_ok,
+            sync_ok,
+            set_mode_permission_denied,
+            replace_file,
+        )
+        .unwrap_err();
+        #[cfg(unix)]
+        assert!(mode_error
+            .to_string()
+            .contains("не удалось установить права"));
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"old");
+        assert!(dir.temp_files().is_empty());
+
+        write_bytes_atomic_checked_with(
+            &path,
+            b"new",
+            Some(0o600),
+            validate_ok,
+            write_ok,
+            sync_ok,
+            set_mode_ok,
+            replace_file,
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+    }
+
+    fn validate_ok(_: &Path) -> Result<()> {
+        Ok(())
+    }
+
+    fn write_ok(file: &mut File, bytes: &[u8]) -> std::io::Result<()> {
+        file.write_all(bytes)
+    }
+
+    fn write_permission_denied(_: &mut File, _: &[u8]) -> std::io::Result<()> {
+        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+    }
+
+    fn sync_ok(file: &File) -> std::io::Result<()> {
+        file.sync_all()
+    }
+
+    fn sync_permission_denied(_: &File) -> std::io::Result<()> {
+        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+    }
+
+    fn set_mode_ok(path: &Path, mode: u32) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (path, mode);
+            Ok(())
+        }
+    }
+
+    #[cfg(unix)]
+    fn set_mode_permission_denied(_: &Path, _: u32) -> std::io::Result<()> {
+        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
     }
 
     #[test]

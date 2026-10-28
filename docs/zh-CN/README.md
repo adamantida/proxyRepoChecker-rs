@@ -21,14 +21,14 @@
 
 ## 项目概览
 
-`proxy-rs` 是一个 Rust CLI，主要用于从订阅聚合器收集代理节点并筛选可用节点。程序支持解析 VLESS、VMess、Trojan 和 Shadowsocks 链接；不支持的协议会计数并跳过，格式错误的链接也不会进入后续检查。
+`proxy-rs` 是一个 Rust CLI，主要用于从订阅聚合器收集代理节点并筛选可用节点。程序支持解析 VLESS、VMess、Trojan、Shadowsocks（`ss`）、Hysteria 1 和 Hysteria 2 链接；具体测速与导出能力取决于对应核心实际支持的选项。不支持的协议会计数并跳过，格式错误的链接也不会进入后续检查。
 
 主要能力：
 
 - 从内置来源集合、额外 URL 和本地文件读取订阅或代理链接。
 - 提取链接、解析节点、去重，并可随机打乱或限制检查数量。
 - 使用 `geoip.dat` 为节点分配国家或特殊标签，并生成 `[XX] - NNN` 显示名。
-- 先用 TCP 连接延迟筛选，再通过 Xray 和 SOCKS 入站实际下载数据来测量速度。
+- 对适用的 TCP 节点先按连接延迟筛选，再通过 Xray 或独立的 Hysteria 1 核心测速。
 - 原子写入原始数据、解析结果、存活节点、合格节点和可选的 Clash/mihomo YAML。
 - 在 Windows、macOS 和 Linux 上构建；自动下载 Xray 的平台支持范围见 [Xray 与 GeoIP](#xray-与-geoip)。
 
@@ -129,6 +129,12 @@ https://example.com/subscription
 vless://uuid@example.net:443#node
 ```
 
+### 支持的代理链接
+
+解析器支持 `vless://`、`vmess://`（包括 Base64 编码的 VMess JSON）、`trojan://`、`ss://`、Hysteria 1 的 `hysteria://`，以及 Hysteria 2 的 `hysteria2://`/`hy2://`。带有 `plugin` 参数的 SS 链接会明确拒绝，避免丢弃所需插件后仍错误地检查连接。`ssr://`、`tuic://` 和 `anytls://` 仍不受支持；格式错误的链接与不支持的协议分别统计。协议可解析不代表每种传输或加密方法都能由测速核心处理，详见下文。
+
+Shadowsocks 支持 SIP002 的 `method:password@host:port`（包括 Base64URL userinfo）和旧版 Base64 编码形式。错误格式会按缺少的方法、地址或端口分隔符分别统计；非标准加密方法会安全地归为 `method=nonstandard`，不输出原始值。格式说明见 [Shadowsocks SIP002 规范](https://github.com/shadowsocks/shadowsocks-org/wiki/SIP002-URI-Scheme)。
+
 ## 处理流程与结果语义
 
 主流程按以下顺序执行：
@@ -136,25 +142,25 @@ vless://uuid@example.net:443#node
 1. **收集输入**：选择 `sources.json` 集合，并合并 `--url`、`--file` 中的输入。
 2. **下载订阅**：并发读取订阅文本；每个失败来源会被记录，成功读取的原始文本写入 `raw.txt`（或 `--raw-output` 指定的路径）。如果没有任何可解析的输入，会报错退出。
 3. **提取、解析、去重**：从订阅文本提取代理 URI，与文件中的直接链接合并；解析支持的协议并统计重复、无效和不支持的项目。
-4. **打乱与截断**：如指定 `--shuffle` 则随机打乱；`--limit N` 将候选数量截为前 N 个。
+4. **打乱与截断**：`--shuffle` 会在 `--limit N` 前打乱节点；`--shuffle-seed N` 可在输入和二进制版本相同时重复生成相同顺序。
 5. **写解析结果**：将唯一节点写入 `parsed.txt`。启用 GeoIP 后，该文件之后会再次写入带国家标签的显示名。
 6. **GeoIP**：默认解析域名并查找 IP 所属国家或特殊标签，重命名显示名。`--no-geoip` 会保留原始节点名。
-7. **TCP 预筛选**：默认尝试连接代理服务器地址。成功的节点记录最佳 TCP RTT；连接失败的节点视为 TCP 阶段的死节点。`--tcp-max-ms` 可在 TCP 阶段按延迟过滤。
+7. **TCP 预筛选**：除 `--no-tcp-ping` 外，对基于 TCP 的代理尝试连接服务器并记录 TCP RTT。Hysteria 1/2 使用 UDP，会跳过 TCP 探测，因此不会记录 TCP RTT。`--tcp-max-ms` 仅作用于已完成的 TCP 探测；`--max-ping` 只筛选已测得 TCP RTT 的节点，不会仅因 Hysteria 跳过 TCP 探测而将其排除。
 8. **`--max-ping` 筛选**：在 TCP 阶段之后，按 TCP RTT 再排除超过指定毫秒数的节点。
-9. **速度检查**：默认由 Xray 启动节点并经 SOCKS 下载测速数据。速度低于 `--min-kb` 的节点不进入合格集合；合格节点按速度写入 `good.txt`。
+9. **速度检查**：默认通过 SOCKS 测量下载速度：普通支持的节点与 Hysteria 2 使用 Xray，Hysteria 1 使用单独的 Hysteria v1 核心。Hysteria 2 的 Gecko 混淆以及超出当前 Xray 实现子集的传输特性会跳过测速。Shadowsocks method/cipher 若不在 Xray allowlist 中，仍可解析，Mihomo 转换器也支持生成对应配置，但会跳过测速。CLI 的 Clash/mihomo 输出只取自 `good`，因此这类未通过测速的节点不会出现在常规命令行生成的 YAML 中。达到 `--min-kb` 的节点写入 `good.txt`。
 10. **生成最终文件**：`alive.txt`、可选的死节点文件，以及基于合格节点的 Clash/mihomo 配置。
 
 ### `alive`、`good` 与 `--no-speed`
 
-- 默认启用速度检查时，**`alive` 是通过速度门槛的节点**；节点必须先通过启用的 TCP 和 ping 筛选。`alive.txt` 在有 ping 值时按 TCP ping 排序，`good.txt` 按速度排序。
+- 默认启用速度检查时，**`alive` 是通过速度门槛的节点**；节点必须先通过适用的 TCP 和 ping 筛选（Hysteria 1/2 不进行 TCP 探测）。`alive.txt` 在有 ping 值时按 TCP ping 排序，`good.txt` 按速度排序。
 - **`good` 是速度检查成功且速度达到 `--min-kb` 的节点**。Clash/mihomo 只从 `good` 生成。若没有合格节点，Clash 生成会跳过。
-- 使用 `--no-speed` 时，**`alive` 表示通过已启用的 TCP/ping 筛选的候选节点**；程序不启动 Xray，不测速度，不写入或更新 `good.txt`，也不会生成 Clash 配置。
+- 使用 `--no-speed` 时，**`alive` 表示通过适用的 TCP/ping 筛选的候选节点**；程序不启动速度检查核心，不测速度，不写入或更新 `good.txt`，也不会生成 Clash 配置。
 - 使用 `--no-tcp-ping` 时会跳过 TCP 预筛选；这不代表节点经过了连通性验证。若同时使用 `--no-speed`，候选节点不会经过连通性检查。仍启用速度检查时，后续 Xray 测速会决定是否合格。
-- `--dead` 是可选输出。它收集 TCP 阶段失败、被 TCP 延迟或 `--max-ping` 淘汰，以及未通过速度检查的代理分享链接。
+- `--dead` 是可选输出。它收集 TCP 阶段失败、超过 ping 阈值或已执行测速但失败的代理分享链接。因测速核心不支持相应传输或 cipher 而跳过的节点会报告为“未检测”，不会误列为 dead。
 
 默认验证订阅 HTTPS 证书。每个来源响应上限为 16 MiB（`--max-source-bytes`）；首次请求之外默认重试两次（`--fetch-retries`，范围 `0..=8`）。`.proxy_cache` 保存成功响应及 `ETag`/`Last-Modified` 验证器；来源未变化时无需重新下载正文，临时错误时可回退到上次成功内容。使用 `--no-fetch-cache` 关闭缓存。`--insecure-source-tls` 会显式关闭 HTTPS 证书验证。
 
-使用 `--source-report source-quality.json` 输出每个来源的状态和计数：已获取、有效、重复、TCP 可达及速度达标。报告会隐藏 URL 中的凭据、查询参数、fragment 和非根路径；不会包含响应正文或网络错误文本。
+使用 `--source-report source-quality.json` 输出每个来源的下载、解析、重复、TCP、速度达标/未达标及 Xray outbound 拒绝计数。使用 `--speed-report speed.json` 将每次探测与 `source_id` 关联。来源 URL 会脱敏，报告不含响应正文和原始网络错误；速度报告包含代理名称和服务器地址，请妥善保管。
 
 使用 `--checkpoint run.checkpoint` 保存已完成阶段，中断后运行以下命令续跑：
 
@@ -182,6 +188,7 @@ proxy-rs --resume --checkpoint run.checkpoint
 | `--set <SET>` | `3`；内置键 `1`、`2`、`3` 或 `all` | 选择 `sources.json` 集合；`all` 不区分大小写。 |
 | `--sources <SOURCES>` | `sources.json` | 指定来源 JSON 文件。 |
 | `-f, --file <FILE>` | 未设置 | 读取额外订阅 URL 和代理分享链接的文本文件。 |
+| `--check-one <FILE>` | 未设置 | 从文件读取且仅读取一个代理链接，以 JSON 输出解析、核心启动、SOCKS 就绪、下载和速度诊断；不能与常规流水线及导出参数同时使用。 |
 | `-u, --url <URL>` | 未设置 | 添加订阅 URL；可多次提供。 |
 | `--fetch-concurrency <N>` | `32`；`1..=4096` | 并行下载来源的数量。 |
 | `--fetch-timeout <SECONDS>` | `15`；`1..=3600` | 单个订阅请求的超时。 |
@@ -204,14 +211,20 @@ proxy-rs --resume --checkpoint run.checkpoint
 | `--dead <DEAD>` | 未设置 | 可选的死节点输出路径。 |
 | `-n, --limit <N>` | 不限制；`N > 0` | 限制进入检查阶段的候选节点数。 |
 | `-s, --shuffle` | 关闭 | 检查前随机打乱节点顺序。 |
+| `--shuffle-seed U64` | 未设置 | 使用指定 seed 可重复打乱；启用打乱。相同输入和二进制版本可得到相同顺序。 |
 | `--raw-output <RAW_OUTPUT>` | `raw.txt` | 成功下载的订阅原始文本；只有存在成功下载内容时写入。 |
 | `--parsed-output <PARSED_OUTPUT>` | `parsed.txt` | 唯一解析节点；启用 GeoIP 后会更新为带国家显示名的版本。 |
-| `--source-report <FILE>` | 未设置 | 写入 URL 已清理的来源质量 JSON 报告。 |
+| `--source-report <FILE>` | 未设置 | 按来源写入 JSON：下载（含失败尝试次数）/解析、重复、TCP、速度达标/未达标及 Xray outbound 拒绝原因；URL 已脱敏。 |
 | `--checkpoint <FILE>` | 未设置 | 原子保存已完成阶段供后续 `--resume`；文件包含代理数据。 |
 | `--json-output <FILE>` | 未设置 | 将最终存活代理写成 JSON 数组，仅包含摘要字段 `protocol`、`server`、`port`、`name`、`country`、`display`、`ping_ms`、`speed_kbs`；不包含代理 URI、密码、UUID 或连接设置。 |
+| `--speed-report <FILE>` | 未设置 | 写出每个候选节点的 JSON 报告，含 `source_id`、中位数、速度范围和每次探测结果。报告包含代理名称和服务器地址，请妥善保管。旧速度 checkpoint 不保存探测详情，因此 `probes` 为 `null`。 |
 | `--clash [<FILE>]` | 未启用；省略文件名时为 `clash.yaml` | 从 `good` 节点生成 Clash/mihomo YAML。指定文件名可更改路径。 |
 | `--clash-no-country` | 关闭 | 不创建国家选择组和各国家组。 |
 | `--clash-no-categories` | 关闭 | 不创建 Telegram、AI、YouTube、游戏分类组，并切换相应规则目标。 |
+| `--singbox [<FILE>]` | 未启用；省略文件名时为 `sing-box.json` | 从 `good` 节点生成完整 sing-box JSON；不支持的节点配置会被跳过。 |
+| `--singbox-report <FILE>` | 未设置 | 写出 JSON 报告，列出已转换节点以及其他节点被跳过的具体原因。 |
+| `--singbox-check` | 关闭 | 生成后使用 `sing-box check` 校验配置；需要 `--singbox` 和至少一个速度达标节点。校验失败时程序以错误退出。 |
+| `--singbox-bin <FILE>` | 从 `PATH` 查找 `sing-box` | 指定用于 `version` 和 `check` 的 sing-box 程序；需要同时指定 `--singbox-check`。 |
 
 例如，筛选美国和德国的 VLESS/VMess 节点，与当前 `alive.txt` 比较后只保留新节点，并将最终结果写成 JSON 摘要：
 
@@ -232,13 +245,15 @@ proxy-rs --url 'https://example.org/sub' --protocol vless,vmess \
 | `--core-start-timeout <SECONDS>` | `8`；`1..=3600` | 等待 Xray 启动的时间。 |
 | `--xray-url <URL>` | 当前 OS/架构对应的 XTLS/Xray-core 最新发行包 | 自定义 Xray 下载地址。 |
 | `--no-xray-download` | 关闭 | 禁止自动下载；若核心文件不存在或无效，运行会报错。 |
-| `--no-speed` | 关闭 | 跳过 Xray 速度检查。 |
+| `--no-hysteria1-download` | 关闭 | 禁止自动下载 Hysteria 1 核心；若没有可用的本地核心，则跳过 Hysteria 1 测速。自动下载的 Hysteria v1.3.5 二进制文件会校验 SHA-256。 |
+| `--no-speed` | 关闭 | 跳过所有核心的速度检查。 |
 | `--speed-url <URL>` | 未设置 | 优先用于速度测量的下载 URL。 |
 | `--speed-timeout <SECONDS>` | `6`；`1..=3600` | 下载测速数据的超时。 |
 | `--speed-connect-timeout <SECONDS>` | `3`；`1..=3600` | 测速连接超时。 |
 | `--speed-max-mb <MB>` | `5`；`0.5..=1024` | 单次测速最多下载的数据量。 |
 | `--min-kb <KB/S>` | `100`；`0..=1,000,000,000` | 合格节点的最低速度门槛。 |
 | `--speed-threads <N>` | `16`；`1..=4096` | 并行速度测量数。 |
+| `--speed-probes <N>` | `3`；`1..=9` | 每个代理的独立测速目标数；以成功结果的中位数作为测速值，并在报告中给出最小值和最大值。 |
 
 ### TCP ping 预筛选
 
@@ -305,14 +320,16 @@ GeoIP 数据库缺失或不能解析时，程序会尝试下载并验证数据�
 
 支持的协议映射：
 
-| Xray 协议 | Clash 类型 | 说明 |
+| 代理协议 | Mihomo 类型 | 说明 |
 |---|---|---|
 | VLESS | `vless` | UUID、flow 及可用的 TLS/Reality 参数。 |
 | VMess | `vmess` | UUID、cipher 与传输设置。 |
 | Trojan | `trojan` | 密码；TLS SNI 使用 `sni` 字段。 |
 | Shadowsocks | `ss` | method/cipher 和密码；对 method 做规范化。 |
+| Hysteria 1 | `hysteria` | Hysteria v1 参数，如认证、协议、混淆和速率。 |
+| Hysteria 2 | `hysteria2` | Hysteria v2 参数；Gecko 可导出到 Mihomo，但不支持 Xray 测速。 |
 
-传输网络支持 `raw`/`tcp`、`ws`、`grpc`、`httpupgrade`、`xhttp` 和尽力映射的 `kcp`。`httpupgrade` 转换为 WebSocket 形式并设置 `v2ray-http-upgrade`。Reality 的公钥从 Xray `realitySettings.password` 映射到 Clash `reality-opts.public-key`。VLESS/VMess 的 TLS 服务器名使用 `servername`；Trojan 使用 `sni`。未知协议会跳过并在生成报告中计数。
+VLESS/VMess/Trojan 传输网络支持 `raw`/`tcp`、`ws`、`grpc`、`httpupgrade`、`xhttp` 和尽力映射的 `kcp`。`httpupgrade` 转换为 WebSocket 形式并设置 `v2ray-http-upgrade`。Reality 的公钥从 Xray `realitySettings.password` 映射到 Clash `reality-opts.public-key`。VLESS/VMess 的 TLS 服务器名使用 `servername`；Trojan 使用 `sni`。Hysteria 2 的 Salamander 混淆和 URI 端口跳跃会转换为 Xray 已实现的 UDP finalmask 设置；Gecko 可导出到 Mihomo，但 Xray 测速会跳过。其他 Hysteria 2 特性只有在当前 Xray 配置明确实现时才能测速；URI 解析成功本身不代表核心支持。未知协议会跳过并在生成报告中计数。
 
 默认分组按以下大致顺序组织：
 
@@ -327,7 +344,7 @@ GeoIP 数据库缺失或不能解析时，程序会尝试下载并验证数据�
 
 ## Workspace 与模块架构
 
-仓库是 Cargo workspace：根包 `proxy-rs` 是 CLI，成员 `proxy-clash` 是独立的 Clash/mihomo 生成库。
+仓库是 Cargo workspace：根包 `proxy-rs` 是 CLI；`proxy-clash` 生成 Clash/mihomo YAML，`proxy-singbox` 将受支持的节点转换为 sing-box JSON，并提供转换报告。
 
 ### 根包 `src/`
 
@@ -356,7 +373,11 @@ GeoIP 数据库缺失或不能解析时，程序会尝试下载并验证数据�
 - `rules.rs`：全局 Clash 配置、DNS 和路由规则。
 - `lib.rs`：公共数据结构与 `render()` 接口。
 
-根包的 `build.rs` 会将 `bin/sources.json` 复制到对应 Cargo profile 输出目录。根包使用 `reqwest` 的 rustls TLS；`serde_yaml_ng` 仅由 `proxy-clash` 使用。
+### `proxy-singbox/`
+
+纯 Rust 库，将受支持的 Xray 节点配置转换为 sing-box JSON，并在报告中列出转换成功及因配置不受支持而跳过的节点；不负责网络或文件 I/O。
+
+根包的 `build.rs` 会将 `bin/sources.json` 复制到对应 Cargo profile 输出目录。根包使用 `reqwest` 的 rustls TLS；`serde_yaml_ng` 仅由 `proxy-clash` 使用，`proxy-singbox` 负责 sing-box JSON 转换。
 
 ## 开发、测试与 CI
 
@@ -387,7 +408,7 @@ cargo bench --bench pipeline
 
 CI 工作流：
 
-- `.github/workflows/cross-platform.yml`：Ubuntu、macOS、Windows 矩阵；运行 Clippy、release 构建和 workspace 测试。另有 Ubuntu 覆盖率与 mutation testing job；覆盖率命令包含 `--fail-under-lines 97`。
+- `.github/workflows/cross-platform.yml`：Ubuntu、macOS、Windows 矩阵；运行 Clippy、release 构建和 workspace 测试。另有 Ubuntu 覆盖率与 mutation testing job；覆盖率命令要求至少 96% 行覆盖率。Ubuntu 当前实测为 96.70% 行覆盖率、84.86% 分支覆盖率；分支暂未设置单独门槛。
 - `.github/workflows/release.yml`：推送 `v*` 标签后运行，在 Linux、macOS 和 Windows 上构建程序与文档压缩包，生成 SHA-256 校验和，并创建供人工检查的 GitHub Release 草稿。
 - `.github/workflows/clash.yml`：每小时运行或手动触发；手动触发默认使用全部来源集合和 25000 个节点上限。在 Ubuntu 上构建并生成 Clash 配置及结果文件，然后 force-push 到专用于生成产物的 `dist` 分支。这个工作流会请求公共订阅与代理网络。
 
@@ -399,11 +420,11 @@ CI 工作流：
 
 ### 没有找到合适的代理
 
-检查文件中的协议前缀与 URI 格式；程序支持 VLESS、VMess、Trojan、Shadowsocks。确认订阅确实包含分享链接而不是 HTML 页面，并查看解析统计中的无效和不支持项目。
+检查文件中的协议前缀与 URI 格式；程序支持 VLESS、VMess、Trojan、Shadowsocks、Hysteria 1/2。确认订阅确实包含分享链接而不是 HTML 页面，并查看解析统计中的无效和不支持项目。
 
 ### 全部节点在 TCP 阶段被淘汰
 
-检查服务器端口、DNS 和本机网络；尝试适当增加 `--tcp-timeout` 或 `--tcp-retries`，或暂时使用 `--no-tcp-ping` 分辨 TCP 预筛选问题。`--tcp-max-ms` 和 `--max-ping` 的 `0` 表示关闭对应延迟上限。
+对于 TCP 节点，检查服务器端口、DNS 和本机网络；尝试适当增加 `--tcp-timeout` 或 `--tcp-retries`，或暂时使用 `--no-tcp-ping` 分辨 TCP 预筛选问题。Hysteria 1/2 使用 UDP，会跳过此 TCP 阶段。`--tcp-max-ms` 和 `--max-ping` 的 `0` 表示关闭对应延迟上限。
 
 ### `good.txt` 为空或没有生成
 
@@ -428,3 +449,7 @@ CI 工作流：
 ### YAML 中少了某些代理或分组
 
 Clash 仅从达到速度门槛的 `good` 集合生成。未知代理协议会跳过；`--clash-no-country` 和 `--clash-no-categories` 会分别关闭对应分组。检查生成汇总中的代理数、跳过数和分组数。
+
+## 许可证
+
+本项目依据 [MIT 许可证](../../LICENSE) 发布。

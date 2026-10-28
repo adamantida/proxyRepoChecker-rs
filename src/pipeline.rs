@@ -7,30 +7,54 @@ use crate::output;
 use crate::parse::{self, Proxy};
 use crate::source_report;
 use crate::sources;
+use crate::speed;
 use crate::tcp_ping;
 use crate::xray::{self, SpeedOpts};
 use colored::Colorize;
+use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
+use rand::SeedableRng;
+use std::collections::BTreeMap;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+#[derive(serde::Serialize)]
+struct SpeedReportEntry<'a> {
+    source_id: Option<String>,
+    name: &'a str,
+    protocol: &'a str,
+    server: &'a str,
+    port: u16,
+    median_kbs: Option<f64>,
+    successful_probes: Option<usize>,
+    min_kbs: Option<f64>,
+    max_kbs: Option<f64>,
+    probes: Option<Vec<speed::ProbeResult>>,
+}
+
 pub(super) fn default_geoip_path() -> anyhow::Result<PathBuf> {
     let exe = std::env::current_exe()?;
-    let dir = exe
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."));
-    Ok(dir.join("geoip.dat"))
+    Ok(default_asset_path(&exe, "geoip.dat"))
 }
 
 pub(super) fn default_core_path() -> anyhow::Result<PathBuf> {
     let exe = std::env::current_exe()?;
-    let dir = exe
+    Ok(default_asset_path(&exe, xray::core_bin_name()))
+}
+
+fn default_asset_path(executable: &Path, asset: &str) -> PathBuf {
+    executable
         .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."));
-    Ok(dir.join(xray::core_bin_name()))
+        .unwrap_or_else(|| Path::new("."))
+        .join(asset)
+}
+
+fn geoip_db_path(configured: Option<&str>) -> anyhow::Result<PathBuf> {
+    match configured {
+        Some(path) => Ok(PathBuf::from(path)),
+        None => default_geoip_path(),
+    }
 }
 
 /// Ищет файл: сначала по пути, потом рядом с exe, потом в bin/ проекта.
@@ -100,6 +124,43 @@ pub(super) fn filter_proxy_protocol_country(
     before - proxies.len()
 }
 
+fn safe_outbound_shape(proxy: &parse::Proxy) -> String {
+    fn field(value: Option<&str>) -> String {
+        value
+            .filter(|value| {
+                !value.is_empty()
+                    && value
+                        .chars()
+                        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+            })
+            .map(|value| value.chars().take(40).collect())
+            .unwrap_or_else(|| "unknown".to_owned())
+    }
+
+    if proxy.proto == "shadowsocks" {
+        let method = proxy
+            .settings
+            .get("method")
+            .and_then(serde_json::Value::as_str);
+        return format!("{}: method={}", proxy.proto, field(method));
+    }
+    let stream = proxy.stream.as_ref();
+    let transport = field(
+        stream
+            .and_then(|value| value.get("network"))
+            .and_then(serde_json::Value::as_str),
+    );
+    let security = field(
+        stream
+            .and_then(|value| value.get("security"))
+            .and_then(serde_json::Value::as_str),
+    );
+    format!(
+        "{}: transport={transport}, security={security}",
+        proxy.proto
+    )
+}
+
 pub(super) fn filter_previously_seen(proxies: &mut Vec<Proxy>, existing: &str) -> usize {
     let known: HashSet<String> = existing
         .lines()
@@ -117,7 +178,9 @@ pub(super) fn retain_within_max_ping(candidates: &mut Vec<Proxy>, max_ping: u64)
 
     let mut rejected = Vec::new();
     candidates.retain(|proxy| {
-        if proxy.ping.unwrap_or(u64::MAX) <= max_ping {
+        if matches!(proxy.proto, "hysteria" | "hysteria2")
+            || proxy.ping.is_some_and(|ping| ping <= max_ping)
+        {
             true
         } else {
             rejected.push(proxy.base_url.clone());
@@ -180,6 +243,7 @@ pub(super) async fn run(mut cli: Cli) -> anyhow::Result<Summary> {
         anyhow::bail!("checkpoint ещё не содержит завершённый этап парсинга");
     }
     let mut source_quality = checkpoint.source_quality.clone();
+    source_quality.fill_missing_source_ids();
     let mut source_owner: HashMap<String, usize> = checkpoint.source_owners.clone();
     let mut proxies;
     if cli.resume {
@@ -192,6 +256,7 @@ pub(super) async fn run(mut cli: Cli) -> anyhow::Result<Summary> {
             sum.duplicates = stats.duplicates;
             sum.invalid = stats.invalid;
             sum.unsupported = stats.unsupported.values().sum();
+            sum.unsupported_details = stats.unsupported_details.clone();
             checkpoint.parse_stats = checkpoint::ParseSnapshotStats {
                 links: stats.links,
                 parsed: stats.parsed,
@@ -220,6 +285,9 @@ pub(super) async fn run(mut cli: Cli) -> anyhow::Result<Summary> {
             sum.duplicates = checkpoint.parse_stats.duplicates;
             sum.invalid = checkpoint.parse_stats.invalid;
             sum.unsupported = checkpoint.parse_stats.unsupported;
+            sum.unsupported_details = parse::parse_all(checkpoint.raw_links.clone())
+                .1
+                .unsupported_details;
         }
         if proxies.is_empty() {
             anyhow::bail!("checkpoint не содержит прокси для продолжения");
@@ -255,28 +323,58 @@ pub(super) async fn run(mut cli: Cli) -> anyhow::Result<Summary> {
             },
         )
         .await;
+        let success_by_url: HashMap<&str, &fetch::FetchSuccess> = report
+            .successes
+            .iter()
+            .map(|success| (success.url.as_str(), success))
+            .collect();
+        let failure_by_url: HashMap<&str, &fetch::FetchFailure> = report
+            .failures
+            .iter()
+            .map(|failure| (failure.url.as_str(), failure))
+            .collect();
         let mut seen_source_keys = HashSet::new();
-        for success in &report.successes {
-            let index = source_quality.sources.len();
-            let row = source_quality.add_source(&success.url);
-            row.status = source_report::SourceStatus::Fetched;
-            row.counts.fetched = 1;
-            for link in parse::extract_links(&success.text) {
-                if let Ok(proxy) = parse::parse_link(&link) {
-                    row.counts.valid += 1;
-                    let key = proxy.key();
-                    if !seen_source_keys.insert(key.clone()) {
-                        row.counts.duplicate += 1;
-                    } else {
-                        source_owner.insert(key, index);
+        for (source_order, source_url) in src.fetch_urls.iter().enumerate() {
+            let source_id = format!("feed-{:03}", source_order + 1);
+            if let Some(success) = success_by_url.get(source_url.as_str()) {
+                let index = source_quality.sources.len();
+                let row = source_quality.add_source_with_id(source_id, source_url);
+                row.status = source_report::SourceStatus::Fetched;
+                row.counts.fetched = 1;
+                for link in parse::extract_links(&success.text) {
+                    match parse::parse_link(&link) {
+                        Ok(proxy) => {
+                            row.counts.valid += 1;
+                            let key = proxy.key();
+                            if !seen_source_keys.insert(key.clone()) {
+                                row.counts.duplicate += 1;
+                            } else {
+                                row.counts.unique += 1;
+                                source_owner.insert(key, index);
+                            }
+                        }
+                        Err(parse::ParseErr::Unsupported(category)) => {
+                            let reason = parse::unsupported_reason_key(&link, category);
+                            *row.counts.unsupported_reasons.entry(reason).or_insert(0) += 1;
+                        }
+                        Err(parse::ParseErr::Invalid(reason)) => {
+                            *row.counts
+                                .invalid_reasons
+                                .entry(reason.to_owned())
+                                .or_insert(0) += 1;
+                        }
                     }
                 }
+                row.status = source_report::SourceStatus::Parsed;
+            } else if let Some(failure) = failure_by_url.get(source_url.as_str()) {
+                let row = source_quality.add_source_with_id(source_id, source_url);
+                row.status = source_report::SourceStatus::FetchFailed;
+                row.fetch_failure = Some(source_report::fetch_failure_kind(&failure.reason));
+                row.fetch_attempts = Some(failure.attempts);
+            } else {
+                let row = source_quality.add_source_with_id(source_id, source_url);
+                row.status = source_report::SourceStatus::Pending;
             }
-            row.status = source_report::SourceStatus::Parsed;
-        }
-        for failure in &report.failures {
-            let row = source_quality.add_source(&failure.url);
-            row.status = source_report::SourceStatus::FetchFailed;
         }
         let mut texts = report.texts;
         let unchanged_from_cache = report
@@ -308,15 +406,18 @@ pub(super) async fn run(mut cli: Cli) -> anyhow::Result<Summary> {
         if sum.fetch_failed == 0 {
             success!(
                 "Загружено подписок: {}, ошибок: {}, без изменений в кэше: {}, использовано устаревших копий: {}",
-                texts.len(), sum.fetch_failed, unchanged_from_cache, stale_from_cache
+                texts.len(),
+                sum.fetch_failed,
+                unchanged_from_cache,
+                stale_from_cache
             );
         } else {
             warning!(
-            "Загружено подписок: {}, ошибок: {}, без изменений в кэше: {}, использовано устаревших копий: {}",
-            texts.len(),
-            sum.fetch_failed,
-            unchanged_from_cache,
-            stale_from_cache
+                "Загружено подписок: {}, ошибок: {}, без изменений в кэше: {}, использовано устаревших копий: {}",
+                texts.len(),
+                sum.fetch_failed,
+                unchanged_from_cache,
+                stale_from_cache
             );
         }
         for example in &sum.fetch_failure_examples {
@@ -364,6 +465,7 @@ pub(super) async fn run(mut cli: Cli) -> anyhow::Result<Summary> {
         sum.duplicates = stats.duplicates;
         sum.invalid = stats.invalid;
         sum.unsupported = stats.unsupported.values().sum();
+        sum.unsupported_details = stats.unsupported_details.clone();
         checkpoint.parse_stats = checkpoint::ParseSnapshotStats {
             links: stats.links,
             parsed: stats.parsed,
@@ -376,18 +478,30 @@ pub(super) async fn run(mut cli: Cli) -> anyhow::Result<Summary> {
             stats.links, stats.parsed, stats.duplicates, stats.invalid
         );
         if !stats.unsupported.is_empty() {
-            let mut list: Vec<(&&'static str, &usize)> = stats.unsupported.iter().collect();
-            list.sort_by(|a, b| b.1.cmp(a.1));
+            let list: Vec<(&&'static str, &usize)> = stats.unsupported.iter().collect();
             let txt: Vec<String> = list.iter().map(|(k, v)| format!("{k}: {v}")).collect();
             warning!("Неподдерживаемые протоколы: {}", txt.join(", "));
+            let table = crate::table::render_count_table(
+                stats
+                    .unsupported_details
+                    .iter()
+                    .map(|(reason, count)| (reason.clone(), *count)),
+            );
+            if !stats.unsupported_details.is_empty() {
+                warning!("Детализация неподдержки:\n{table}");
+            }
         }
         if !stats.invalid_reasons.is_empty() {
-            let mut list: Vec<(&&'static str, &usize)> = stats.invalid_reasons.iter().collect();
-            list.sort_by(|a, b| b.1.cmp(a.1));
-            let txt: Vec<String> = list.iter().map(|(k, v)| format!("{k}: {v}")).collect();
-            warning!("Причины некорректных: {}", txt.join(", "));
+            let table = crate::table::render_count_table(
+                stats
+                    .invalid_reasons
+                    .iter()
+                    .map(|(reason, count)| ((*reason).to_owned(), *count)),
+            );
+            warning!("Причины некорректных:\n{table}");
         }
         if proxies.is_empty() {
+            write_source_report(&cli, &source_quality)?;
             anyhow::bail!("не найдено ни одного подходящего прокси");
         }
         checkpoint.raw_links = raw_links_for_checkpoint.clone();
@@ -402,9 +516,11 @@ pub(super) async fn run(mut cli: Cli) -> anyhow::Result<Summary> {
         save_checkpoint(&cli, &checkpoint)?;
     }
 
-    if cli.shuffle {
-        let mut rng = rand::thread_rng();
+    if let Some(seed) = cli.shuffle_seed {
+        let mut rng = StdRng::seed_from_u64(seed);
         proxies.shuffle(&mut rng);
+    } else if cli.shuffle {
+        proxies.shuffle(&mut rand::thread_rng());
     }
     if let Some(n) = cli.limit {
         if proxies.len() > n {
@@ -436,10 +552,7 @@ pub(super) async fn run(mut cli: Cli) -> anyhow::Result<Summary> {
     if rename {
         if resume_stage < checkpoint::PipelineStage::GeoIp {
             let t = Instant::now();
-            let db_path = match &cli.geoip_db {
-                Some(p) => PathBuf::from(p),
-                None => default_geoip_path()?,
-            };
+            let db_path = geoip_db_path(cli.geoip_db.as_deref())?;
             geoip::ensure_db(&db_path, &cli.geoip_url).await?;
             let db = geoip::GeoDb::open(&db_path)?;
             let (nc, n4, n6) = db.stats();
@@ -527,16 +640,19 @@ pub(super) async fn run(mut cli: Cli) -> anyhow::Result<Summary> {
         sum.tcp_total = st.total;
         sum.tcp_alive = st.alive;
         success!(
-            "Живых {}/{} (макс. TCP RTT {} мс), мёртвых {}",
+            "Живых TCP {}/{} (макс. RTT {} мс), UDP-прокси без TCP-проверки {}, мёртвых {}",
             st.alive,
             st.total,
             st.max_ms_seen,
+            st.udp_skipped,
             st.dead
         );
         dead_urls.extend(dead.iter().map(|p| p.base_url.clone()));
         for proxy in &alive {
-            if let Some(index) = source_owner.get(&proxy.key()) {
-                source_quality.sources[*index].counts.tcp_live += 1;
+            if !matches!(proxy.proto, "hysteria" | "hysteria2") {
+                if let Some(index) = source_owner.get(&proxy.key()) {
+                    source_quality.sources[*index].counts.tcp_live += 1;
+                }
             }
         }
         for row in &mut source_quality.sources {
@@ -617,6 +733,8 @@ pub(super) async fn run(mut cli: Cli) -> anyhow::Result<Summary> {
 
     let mut alive: Vec<Proxy>;
     let mut good: Vec<Proxy> = Vec::new();
+    let mut speed_measurements = HashMap::new();
+    let mut speed_probe_results = HashMap::new();
 
     phase!("5/6", "ПРОВЕРКА СКОРОСТИ");
     // ------------------------------------------------------------------
@@ -625,7 +743,7 @@ pub(super) async fn run(mut cli: Cli) -> anyhow::Result<Summary> {
     sum.speed_enabled = !cli.no_speed;
     if cli.no_speed {
         candidates.sort_by_key(|p| p.ping.unwrap_or(u64::MAX));
-        alive = candidates;
+        alive = candidates.clone();
         info!(
             "Скорость выключена (--no-speed): живых по TCP ping {}",
             alive.len()
@@ -647,7 +765,7 @@ pub(super) async fn run(mut cli: Cli) -> anyhow::Result<Summary> {
                 .collect::<Vec<_>>(),
         )?;
         sum.good_file = Some((cli.good_output.clone(), good.len()));
-        alive = candidates;
+        alive = candidates.clone();
     } else {
         let core_path = if PathBuf::from(&cli.core).exists() {
             PathBuf::from(&cli.core)
@@ -659,7 +777,7 @@ pub(super) async fn run(mut cli: Cli) -> anyhow::Result<Summary> {
 
         let checker = xray::Checker::new(&cli)?;
         info!(
-            "Фаза 2 (скорость через xray): {} прокси, батчи {}, потоков {}, до {:.1} MB, мин {:.1} KB/s",
+            "Фаза 2 (замер скорости): {} прокси, батчи {}, потоков {}, до {:.1} MB, мин {:.1} KB/s",
             candidates.len(),
             cli.batch,
             cli.speed_threads,
@@ -672,8 +790,8 @@ pub(super) async fn run(mut cli: Cli) -> anyhow::Result<Summary> {
             timeout_s: cli.speed_timeout,
             max_mb: cli.speed_max_mb,
             min_kb: cli.min_kb,
+            speed_probes: cli.speed_probes,
         };
-        sum.speed_total = candidates.len();
         let t = Instant::now();
         let passed = checker
             .run_all(
@@ -688,11 +806,49 @@ pub(super) async fn run(mut cli: Cli) -> anyhow::Result<Summary> {
         sum.speed_secs = t.elapsed().as_secs_f64();
         sum.speed_passed = passed.len();
         sum.bad_outbounds = checker.bad_outbounds();
+        let bad_outbound_rejections = checker.bad_outbound_rejections();
+        let mut rejection_groups = BTreeMap::<String, u64>::new();
+        for proxy in &candidates {
+            let key = proxy.key();
+            if let Some(reason) = bad_outbound_rejections.get(&key) {
+                *rejection_groups
+                    .entry(format!("{}: {reason}", safe_outbound_shape(proxy)))
+                    .or_default() += 1;
+                if let Some(index) = source_owner.get(&key) {
+                    *source_quality.sources[*index]
+                        .counts
+                        .xray_outbound_rejections
+                        .entry(format!("{}: {reason}", safe_outbound_shape(proxy)))
+                        .or_insert(0) += 1;
+                }
+            }
+        }
+        if !rejection_groups.is_empty() {
+            let table = crate::table::render_count_table(
+                rejection_groups
+                    .into_iter()
+                    .map(|(reason, count)| (reason, count as usize)),
+            );
+            warning!("Причины отказа outbound Xray:\n{table}");
+        }
+        speed_measurements = checker.speed_measurements();
+        speed_probe_results = checker.speed_probe_results();
+        let unchecked_keys = checker.speed_unchecked_keys();
+        sum.speed_unchecked = unchecked_keys.len();
+        sum.speed_total = candidates.len().saturating_sub(unchecked_keys.len());
 
         let passed_keys: HashSet<String> = passed.iter().map(|p| p.key()).collect();
         for proxy in &passed {
             if let Some(index) = source_owner.get(&proxy.key()) {
                 source_quality.sources[*index].counts.speed_qualified += 1;
+            }
+        }
+        for proxy in &candidates {
+            let key = proxy.key();
+            if speed_measurements.contains_key(&key) && !passed_keys.contains(&key) {
+                if let Some(index) = source_owner.get(&key) {
+                    source_quality.sources[*index].counts.speed_failed += 1;
+                }
             }
         }
         for row in &mut source_quality.sources {
@@ -704,16 +860,16 @@ pub(super) async fn run(mut cli: Cli) -> anyhow::Result<Summary> {
             }
         }
         for p in &candidates {
-            if !passed_keys.contains(&p.key()) {
+            if !passed_keys.contains(&p.key()) && !unchecked_keys.contains(&p.key()) {
                 dead_urls.push(p.base_url.clone());
             }
         }
 
         success!(
-            "Прошли порог скорости: {}/{} (отсеяно: {})",
+            "Прошли порог скорости: {}/{}; без проверки подходящим ядром: {}",
             passed.len(),
-            candidates.len(),
-            candidates.len() - passed.len()
+            sum.speed_total,
+            sum.speed_unchecked
         );
 
         good = passed.clone();
@@ -784,6 +940,45 @@ pub(super) async fn run(mut cli: Cli) -> anyhow::Result<Summary> {
         };
     }
 
+    if let Some(path) = &cli.speed_report {
+        let rows: Vec<_> = candidates
+            .iter()
+            .map(|proxy| {
+                let measurement = speed_measurements.get(&proxy.key());
+                SpeedReportEntry {
+                    source_id: source_owner
+                        .get(&proxy.key())
+                        .map(|index| source_quality.sources[*index].source_id.clone()),
+                    name: if proxy.display.is_empty() {
+                        &proxy.name
+                    } else {
+                        &proxy.display
+                    },
+                    protocol: proxy.proto,
+                    server: &proxy.host,
+                    port: proxy.port,
+                    median_kbs: measurement.map(|value| value.median_kbs),
+                    successful_probes: measurement.map(|value| value.successful_probes),
+                    min_kbs: measurement.and_then(|value| value.min_kbs),
+                    max_kbs: measurement.and_then(|value| value.max_kbs),
+                    probes: speed_probe_results.get(&proxy.key()).map(|probes| {
+                        probes
+                            .iter()
+                            .cloned()
+                            .map(|mut probe| {
+                                probe.target_url = source_report::redact_url(&probe.target_url);
+                                probe
+                            })
+                            .collect()
+                    }),
+                }
+            })
+            .collect();
+        let json = serde_json::to_string_pretty(&rows)?;
+        output::write_text_atomic(path, &json)?;
+        sum.speed_report_file = Some((path.clone(), rows.len()));
+    }
+
     // ------------------------------------------------------------------
     // 8. Clash/mihomo конфиг из good-прокси
     // ------------------------------------------------------------------
@@ -827,6 +1022,68 @@ pub(super) async fn run(mut cli: Cli) -> anyhow::Result<Summary> {
                 report.countries
             );
             sum.clash_file = Some((path.clone(), report.proxies));
+        }
+    }
+
+    if let Some(path) = &cli.singbox {
+        if good.is_empty() {
+            info!("sing-box: пропуск — нет прокси, прошедших порог скорости");
+            if let Some(report_path) = &cli.singbox_report {
+                let report = proxy_singbox::Report::default();
+                output::write_text_atomic(report_path, &serde_json::to_string_pretty(&report)?)?;
+                sum.singbox_report_file = Some((report_path.clone(), 0));
+            }
+        } else {
+            let sources: Vec<proxy_singbox::Source> = good
+                .iter()
+                .map(|proxy| proxy_singbox::Source {
+                    proto: proxy.proto.to_string(),
+                    name: if proxy.display.is_empty() {
+                        proxy.name.clone()
+                    } else {
+                        proxy.display.clone()
+                    },
+                    server: proxy.host.clone(),
+                    port: proxy.port,
+                    country: proxy.country.clone(),
+                    settings: proxy.settings.clone(),
+                    stream: proxy.stream.clone(),
+                })
+                .collect();
+            let (json, report) =
+                proxy_singbox::render(&sources, &proxy_singbox::Options::default())?;
+            output::write_text_atomic(path, &json)?;
+            if cli.singbox_check {
+                let binary = cli.singbox_bin.as_deref().map(Path::new);
+                let result = crate::singbox_check::validate(binary, Path::new(path))?;
+                success!(
+                    "sing-box проверил конфиг: {} ({})",
+                    result.version,
+                    result.binary
+                );
+            }
+            if let Some(report_path) = &cli.singbox_report {
+                output::write_text_atomic(report_path, &serde_json::to_string_pretty(&report)?)?;
+                sum.singbox_report_file = Some((report_path.clone(), report.skipped_count()));
+            }
+            if report.skipped_count() > 0 {
+                warning!(
+                    "sing-box: пропущено неподдерживаемых узлов: {}",
+                    report.skipped_count()
+                );
+                for skipped in &report.skipped_nodes {
+                    warning!(
+                        "sing-box: {} пропущен — {}",
+                        skipped.protocol,
+                        skipped
+                            .reason
+                            .as_deref()
+                            .unwrap_or("неподдерживаемая конфигурация")
+                    );
+                }
+            }
+            success!("Сохранено: {} ({} узлов)", path, report.supported_count());
+            sum.singbox_file = Some((path.clone(), report.supported_count()));
         }
     }
 
@@ -965,6 +1222,11 @@ PY
 
     #[cfg(unix)]
     async fn serve_speed_fixture() -> (String, tokio::task::JoinHandle<()>) {
+        serve_speed_fixture_for(1).await
+    }
+
+    #[cfg(unix)]
+    async fn serve_speed_fixture_for(requests: usize) -> (String, tokio::task::JoinHandle<()>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -972,22 +1234,24 @@ PY
             .expect("bind local speed fixture");
         let address = listener.local_addr().unwrap();
         let task = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.expect("accept speed request");
-            let mut request = [0_u8; 2048];
-            let _ = stream.read(&mut request).await.expect("read speed request");
             let body = vec![b'x'; 16 * 1024];
             let headers = format!(
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
             );
-            stream
-                .write_all(headers.as_bytes())
-                .await
-                .expect("write speed response headers");
-            stream
-                .write_all(&body)
-                .await
-                .expect("write speed response body");
+            for _ in 0..requests {
+                let (mut stream, _) = listener.accept().await.expect("accept speed request");
+                let mut request = [0_u8; 2048];
+                let _ = stream.read(&mut request).await.expect("read speed request");
+                stream
+                    .write_all(headers.as_bytes())
+                    .await
+                    .expect("write speed response headers");
+                stream
+                    .write_all(&body)
+                    .await
+                    .expect("write speed response body");
+            }
         });
         (format!("http://{address}/speed-fixture"), task)
     }
@@ -1007,9 +1271,7 @@ PY
                 let mut chunk = [0_u8; 1024];
                 loop {
                     let count = stream.read(&mut chunk).await.expect("read source request");
-                    if count == 0 {
-                        break;
-                    }
+                    assert_ne!(count, 0, "client closed before sending HTTP headers");
                     request.extend_from_slice(&chunk[..count]);
                     if request.windows(4).any(|window| window == b"\r\n\r\n") {
                         break;
@@ -1037,13 +1299,58 @@ PY
     }
 
     #[cfg(unix)]
+    async fn serve_subscription_once(body: String) -> (String, tokio::task::JoinHandle<()>) {
+        serve_subscription_response_once("200 OK", body).await
+    }
+
+    #[cfg(unix)]
+    async fn serve_subscription_response_once(
+        status: &'static str,
+        body: String,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind one-shot subscription fixture");
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener
+                .accept()
+                .await
+                .expect("accept subscription request");
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let count = stream
+                    .read(&mut chunk)
+                    .await
+                    .expect("read subscription request");
+                assert_ne!(count, 0, "client closed before sending HTTP headers");
+                request.extend_from_slice(&chunk[..count]);
+            }
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .await
+                .expect("write subscription response");
+        });
+        (format!("http://{address}/subscription"), task)
+    }
+
+    #[cfg(unix)]
     async fn serve_tcp_target() -> (u16, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
             .expect("bind local TCP target");
         let port = listener.local_addr().unwrap().port();
         let task = tokio::spawn(async move {
-            while let Ok((stream, _)) = listener.accept().await {
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().await.expect("accept local TCP probe");
                 drop(stream);
             }
         });
@@ -1057,12 +1364,15 @@ PY
         let links = temp.path("links.txt");
         std::fs::write(
             &links,
-            "vless://01234567-89ab-cdef-0123-456789abcdef@127.0.0.1:443#local-unit-speed-node\n",
+            concat!(
+                "vless://01234567-89ab-cdef-0123-456789abcdef@127.0.0.1:443#local-unit-speed-node\n",
+                "vless://11234567-89ab-cdef-0123-456789abcdef@127.0.0.1:8443#second-local-speed-node\n"
+            ),
         )
         .unwrap();
         let core = temp.path("fake-xray");
         write_fake_xray(&core);
-        let (speed_url, speed_server) = serve_speed_fixture().await;
+        let (speed_url, speed_server) = serve_speed_fixture_for(2).await;
 
         let mut cli = cli();
         cli.file = Some(links.display().to_string());
@@ -1072,11 +1382,15 @@ PY
         cli.parsed_output = temp.path("parsed.txt").display().to_string();
         cli.good_output = temp.path("good.txt").display().to_string();
         cli.clash = Some(temp.path("clash.yaml").display().to_string());
+        cli.singbox = Some(temp.path("sing-box.json").display().to_string());
+        cli.singbox_report = Some(temp.path("sing-box-report.json").display().to_string());
+        cli.speed_report = Some(temp.path("speed-report.json").display().to_string());
         cli.core = core.display().to_string();
         cli.workdir = temp.path("work").display().to_string();
         cli.speed_url = Some(speed_url);
         cli.speed_timeout = 3.0;
         cli.speed_connect_timeout = 2.0;
+        cli.speed_probes = 1;
         cli.min_kb = 0.0;
         cli.batch = 1;
         cli.batch_workers = 1;
@@ -1088,12 +1402,12 @@ PY
         let summary = run(cli).await.unwrap();
         speed_server.await.unwrap();
 
-        assert_eq!(summary.speed_total, 1);
-        assert_eq!(summary.speed_passed, 1);
-        assert_eq!(summary.good, 1);
+        assert_eq!(summary.speed_total, 2);
+        assert_eq!(summary.speed_passed, 2);
+        assert_eq!(summary.good, 2);
         assert_eq!(
             summary.clash_file.as_ref().map(|(_, count)| *count),
-            Some(1)
+            Some(2)
         );
         assert!(std::fs::read_to_string(temp.path("good.txt"))
             .unwrap()
@@ -1101,6 +1415,291 @@ PY
         let clash = std::fs::read_to_string(temp.path("clash.yaml")).unwrap();
         assert!(clash.contains("local-unit-speed-node"), "{clash}");
         assert!(clash.contains("proxy-groups:"), "{clash}");
+        let singbox: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(temp.path("sing-box.json")).unwrap()).unwrap();
+        assert_eq!(singbox["outbounds"][0]["type"], "vless");
+        let singbox_report: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(temp.path("sing-box-report.json")).unwrap())
+                .unwrap();
+        assert_eq!(singbox_report["supported"].as_array().unwrap().len(), 2);
+        let speed_report: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(temp.path("speed-report.json")).unwrap())
+                .unwrap();
+        assert_eq!(speed_report.as_array().unwrap().len(), 2);
+        assert!(speed_report[0]["median_kbs"].as_f64().unwrap() > 0.0);
+        let probes = speed_report[0]["probes"].as_array().unwrap();
+        assert_eq!(probes.len(), 1);
+        assert_eq!(probes[0]["status"], "success");
+        assert!(probes[0]["speed_kbs"].as_f64().unwrap() > 0.0);
+        assert!(probes[0]["failure_reason"].is_null());
+        assert!(probes[0]["target_url"]
+            .as_str()
+            .unwrap()
+            .contains("[redacted]"));
+        assert_eq!(
+            summary.singbox_file.as_ref().map(|(_, count)| *count),
+            Some(2)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_records_speed_rejections_as_dead_without_creating_good_or_clash_files() {
+        let temp = TestDir::new();
+        let (port, tcp_server) = serve_tcp_target().await;
+        let links = temp.path("links.txt");
+        std::fs::write(
+            &links,
+            format!("vless://01234567-89ab-cdef-0123-456789abcdef@127.0.0.1:{port}#slow-node\n"),
+        )
+        .unwrap();
+        let core = temp.path("fake-xray");
+        write_fake_xray(&core);
+        let (speed_url, speed_server) = serve_speed_fixture().await;
+        let dead = temp.path("dead.txt");
+        let clash = temp.path("clash.yaml");
+        let mut options = cli();
+        options.file = Some(links.display().to_string());
+        options.sources = temp.path("missing-sources.json").display().to_string();
+        options.core = core.display().to_string();
+        options.workdir = temp.path("work").display().to_string();
+        options.speed_url = Some(speed_url);
+        options.speed_timeout = 3.0;
+        options.speed_connect_timeout = 2.0;
+        options.speed_probes = 1;
+        options.min_kb = 1_000_000.0;
+        options.batch = 1;
+        options.batch_workers = 1;
+        options.speed_threads = 1;
+        options.no_geoip = true;
+        options.no_tcp_ping = true;
+        options.no_xray_download = true;
+        options.dead = Some(dead.display().to_string());
+        options.clash = Some(clash.display().to_string());
+
+        let summary = run(options).await.unwrap();
+        speed_server.await.unwrap();
+        tcp_server.abort();
+
+        assert_eq!(summary.speed_total, 1);
+        assert_eq!(summary.speed_passed, 0);
+        assert_eq!(summary.good, 0);
+        assert_eq!(summary.dead_file.as_ref().map(|(_, count)| *count), Some(1));
+        assert!(std::fs::read_to_string(dead).unwrap().contains("127.0.0.1"));
+        assert!(!clash.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_reports_unsupported_speed_cipher_as_unchecked_not_dead() {
+        let temp = TestDir::new();
+        let links = temp.path("links.txt");
+        std::fs::write(
+            &links,
+            "ss://YWVzLTEyOC1jZmI6cGFzcw==@127.0.0.1:8388#mihomo-only-cipher\n",
+        )
+        .unwrap();
+        let core = temp.path("fake-xray");
+        write_fake_xray(&core);
+        let dead = temp.path("dead.txt");
+        let mut options = cli();
+        options.file = Some(links.display().to_string());
+        options.sources = temp.path("missing-sources.json").display().to_string();
+        options.core = core.display().to_string();
+        options.workdir = temp.path("work").display().to_string();
+        options.no_geoip = true;
+        options.no_tcp_ping = true;
+        options.no_xray_download = true;
+        options.no_hysteria1_download = true;
+        options.dead = Some(dead.display().to_string());
+
+        let summary = run(options).await.unwrap();
+
+        assert_eq!(summary.speed_total, 0);
+        assert_eq!(summary.speed_passed, 0);
+        assert_eq!(summary.speed_unchecked, 1);
+        assert_eq!(summary.dead_file.as_ref().map(|(_, count)| *count), Some(0));
+        assert_eq!(std::fs::read_to_string(dead).unwrap(), "");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_tracks_source_quality_through_tcp_and_speed_stages() {
+        let temp = TestDir::new();
+        let (port, tcp_server) = serve_tcp_target().await;
+        let link = format!(
+            "vless://01234567-89ab-cdef-0123-456789abcdef@127.0.0.1:{port}#source-speed-node"
+        );
+        let (url, source_server) =
+            serve_subscription_once(format!("{link}\n{link}\nvless://bad@bad.example\n")).await;
+        let (second_url, second_source_server) = serve_subscription_once(format!(
+            "{link}\nvmess://01234567-89ab-cdef-0123-456789abcdef@bad.example:443?type=quic\n"
+        ))
+        .await;
+        let sources = temp.path("sources.json");
+        std::fs::write(
+            &sources,
+            serde_json::json!({"3": [url.clone(), second_url.clone()]}).to_string(),
+        )
+        .unwrap();
+        let core = temp.path("fake-xray");
+        write_fake_xray(&core);
+        let (speed_url, speed_server) = serve_speed_fixture().await;
+        let report_path = temp.path("source-report.json");
+
+        let mut options = cli();
+        options.sources = sources.display().to_string();
+        options.source_report = Some(report_path.display().to_string());
+        options.fetch_cache_dir = temp.path("cache").display().to_string();
+        options.output = temp.path("alive.txt").display().to_string();
+        options.raw_output = temp.path("raw.txt").display().to_string();
+        options.parsed_output = temp.path("parsed.txt").display().to_string();
+        options.good_output = temp.path("good.txt").display().to_string();
+        options.core = core.display().to_string();
+        options.workdir = temp.path("work").display().to_string();
+        options.speed_url = Some(speed_url);
+        options.speed_timeout = 3.0;
+        options.speed_connect_timeout = 2.0;
+        options.speed_probes = 1;
+        options.fetch_concurrency = 1;
+        options.min_kb = 0.0;
+        options.batch = 1;
+        options.batch_workers = 1;
+        options.speed_threads = 1;
+        options.no_geoip = true;
+        options.no_xray_download = true;
+        options.tcp_max_ms = 10_000;
+
+        let summary = run(options).await.unwrap();
+        source_server.await.unwrap();
+        second_source_server.await.unwrap();
+        speed_server.await.unwrap();
+        tcp_server.abort();
+
+        assert_eq!(summary.alive, 1);
+        let report: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+        let sources = report["sources"].as_array().unwrap();
+        let first = sources
+            .iter()
+            .find(|source| source["url"] == source_report::redact_url(&url))
+            .unwrap();
+        assert_eq!(first["status"], "speed_checked");
+        assert_eq!(first["counts"]["fetched"], 1);
+        assert_eq!(first["counts"]["valid"], 2);
+        assert_eq!(first["counts"]["unique"], 1);
+        assert_eq!(first["counts"]["duplicate"], 1);
+        assert_eq!(first["counts"]["invalid_reasons"]["bad uuid"], 1);
+        assert_eq!(first["counts"]["tcp_live"], 1);
+        assert_eq!(first["counts"]["speed_qualified"], 1);
+        let second = sources
+            .iter()
+            .find(|source| source["url"] == source_report::redact_url(&second_url))
+            .unwrap();
+        assert_eq!(second["counts"]["valid"], 1);
+        assert_eq!(second["counts"]["unique"], 0);
+        assert_eq!(second["counts"]["duplicate"], 1);
+        assert_eq!(
+            second["counts"]["unsupported_reasons"]["vmess: transport=quic"],
+            1
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_reports_fetched_proxy_rejected_by_tcp_with_empty_dead_and_json_outputs() {
+        let temp = TestDir::new();
+        // Hold the port on 127.0.0.1 while targeting 127.0.0.2. Both are
+        // loopback addresses, but the listener cannot accept the probe target.
+        let occupied = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = occupied.local_addr().unwrap().port();
+        let link =
+            format!("vless://01234567-89ab-cdef-0123-456789abcdef@127.0.0.2:{port}#tcp-rejected");
+        let (url, source_server) = serve_subscription_once(format!("{link}\n")).await;
+        let sources = temp.path("sources.json");
+        std::fs::write(&sources, serde_json::json!({"3": [url]}).to_string()).unwrap();
+        let report_path = temp.path("source-report.json");
+        let dead_path = temp.path("dead.txt");
+        let json_path = temp.path("proxies.json");
+
+        let mut options = cli();
+        options.sources = sources.display().to_string();
+        options.fetch_cache_dir = temp.path("cache").display().to_string();
+        options.source_report = Some(report_path.display().to_string());
+        options.dead = Some(dead_path.display().to_string());
+        options.json_output = Some(json_path.display().to_string());
+        options.tcp_timeout = 0.1;
+        options.tcp_retries = 0;
+        options.tcp_concurrency = 1;
+        options.no_geoip = true;
+        options.no_speed = true;
+
+        let summary = run(options).await.unwrap();
+        source_server.await.unwrap();
+        assert!(
+            occupied.local_addr().is_ok(),
+            "fixture listener must stay bound"
+        );
+
+        assert_eq!(summary.alive, 0);
+        assert_eq!(summary.dead_file.as_ref().map(|(_, count)| *count), Some(1));
+        assert!(std::fs::read_to_string(dead_path)
+            .unwrap()
+            .contains(&format!("127.0.0.2:{port}")));
+        assert_eq!(std::fs::read_to_string(json_path).unwrap(), "[]");
+        let report: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+        assert_eq!(report["sources"][0]["status"], "tcp_checked");
+        assert_eq!(report["sources"][0]["counts"]["tcp_live"], 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_counts_valid_links_and_ignores_malformed_links_from_fetched_source() {
+        let temp = TestDir::new();
+        let link = "vless://01234567-89ab-cdef-0123-456789abcdef@local.example:443#valid";
+        let unsupported =
+            "vmess://01234567-89ab-cdef-0123-456789abcdef@node.example:443?type=quic#unsupported";
+        let (url, source_server) =
+            serve_subscription_once(format!("{link}\n{unsupported}\nnot-a-proxy\nvless://bad\n"))
+                .await;
+        let source_url = format!(
+            "{}?token=query-secret",
+            url.replacen("://", "://alice:feed-secret@", 1)
+        );
+        let sources = temp.path("sources.json");
+        std::fs::write(&sources, serde_json::json!({"3": [source_url]}).to_string()).unwrap();
+        let report_path = temp.path("source-report.json");
+        let mut options = cli();
+        options.sources = sources.display().to_string();
+        options.source_report = Some(report_path.display().to_string());
+        options.fetch_cache_dir = temp.path("cache").display().to_string();
+        options.no_geoip = true;
+        options.no_tcp_ping = true;
+        options.no_speed = true;
+
+        let summary = run(options).await.unwrap();
+        source_server.await.unwrap();
+
+        assert_eq!(summary.unique, 1);
+        assert_eq!(summary.alive, 1);
+        let report: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&report_path).unwrap()).unwrap();
+        let source = &report["sources"][0];
+        assert_eq!(source["status"], "parsed");
+        assert_eq!(source["counts"]["valid"], 1);
+        assert_eq!(source["counts"]["duplicate"], 0);
+        assert_eq!(
+            source["counts"]["unsupported_reasons"]["vmess: transport=quic"],
+            1
+        );
+        let report_json = std::fs::read_to_string(report_path).unwrap();
+        for secret in ["alice", "feed-secret", "query-secret"] {
+            assert!(
+                !report_json.contains(secret),
+                "source report leaked {secret}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1156,6 +1755,59 @@ PY
         assert!(error
             .to_string()
             .contains("checkpoint для --resume не найден"));
+    }
+
+    #[tokio::test]
+    async fn run_rejects_resume_before_a_parse_stage_is_complete() {
+        let temp = TestDir::new();
+        let checkpoint_path = temp.path("new.checkpoint.json");
+        checkpoint::Checkpoint::new()
+            .save(&checkpoint_path)
+            .unwrap();
+        let mut options = cli();
+        options.resume = true;
+        options.checkpoint = Some(checkpoint_path.display().to_string());
+
+        let error = run(options).await.unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("checkpoint ещё не содержит завершённый этап парсинга"));
+    }
+
+    #[tokio::test]
+    async fn run_rejects_an_empty_source_selection() {
+        let temp = TestDir::new();
+        let sources = temp.path("sources.json");
+        std::fs::write(&sources, r#"{"3":[]}"#).unwrap();
+        let mut options = cli();
+        options.sources = sources.display().to_string();
+
+        let error = run(options).await.unwrap_err();
+
+        assert!(error.to_string().contains("нет источников для загрузки"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_reports_fetch_failure_and_returns_when_all_subscriptions_fail() {
+        let temp = TestDir::new();
+        let (url, source_server) =
+            serve_subscription_response_once("503 Service Unavailable", String::new()).await;
+        let sources = temp.path("sources.json");
+        std::fs::write(&sources, serde_json::json!({"3": [url]}).to_string()).unwrap();
+        let mut options = cli();
+        options.sources = sources.display().to_string();
+        options.fetch_retries = 0;
+        options.fetch_timeout = 1.0;
+        options.no_fetch_cache = true;
+
+        let error = run(options).await.unwrap_err();
+        source_server.await.unwrap();
+
+        assert!(error
+            .to_string()
+            .contains("не удалось загрузить ни одного источника (ошибок: 1)"));
     }
 
     #[tokio::test]
@@ -1227,7 +1879,7 @@ PY
     async fn run_errors_when_parsing_produces_no_supported_proxies() {
         let temp = TestDir::new();
         let links = temp.path("invalid-links.txt");
-        std::fs::write(&links, "not-a-proxy\nhysteria2://unsupported\n").unwrap();
+        std::fs::write(&links, "not-a-proxy\ntuic://unsupported\n").unwrap();
         let mut options = cli();
         options.file = Some(links.display().to_string());
         options.sources = temp.path("missing-sources.json").display().to_string();
@@ -1401,6 +2053,280 @@ PY
         tcp_server.abort();
     }
 
+    #[tokio::test]
+    async fn run_applies_limit_before_only_new_and_handles_missing_previous_output() {
+        let temp = TestDir::new();
+        let links = temp.path("links.txt");
+        std::fs::write(
+            &links,
+            concat!(
+                "vless://01234567-89ab-cdef-0123-456789abcdef@first.example:443#new-node\n",
+                "vless://11234567-89ab-cdef-0123-456789abcdef@second.example:443#known-node\n"
+            ),
+        )
+        .unwrap();
+        let output = temp.path("alive.txt");
+        let mut options = cli();
+        options.file = Some(links.display().to_string());
+        options.sources = temp.path("missing-sources.json").display().to_string();
+        options.output = output.display().to_string();
+        options.parsed_output = temp.path("parsed.txt").display().to_string();
+        options.no_geoip = true;
+        options.no_tcp_ping = true;
+        options.no_speed = true;
+        options.only_new = true;
+        options.limit = Some(1);
+
+        let summary = run(options).await.unwrap();
+
+        assert_eq!(summary.unique, 2);
+        assert_eq!(summary.alive, 1);
+        let alive = std::fs::read_to_string(output).unwrap();
+        assert!(alive.contains("new-node"));
+        assert!(!alive.contains("known-node"));
+    }
+
+    #[tokio::test]
+    async fn run_shuffles_candidates_without_dropping_links() {
+        let temp = TestDir::new();
+        let links = temp.path("links.txt");
+        std::fs::write(
+            &links,
+            concat!(
+                "vless://01234567-89ab-cdef-0123-456789abcdef@first.example:443#first-node\n",
+                "vless://11234567-89ab-cdef-0123-456789abcdef@second.example:443#second-node\n"
+            ),
+        )
+        .unwrap();
+        let mut options = cli();
+        options.file = Some(links.display().to_string());
+        options.sources = temp.path("missing-sources.json").display().to_string();
+        options.parsed_output = temp.path("parsed.txt").display().to_string();
+        options.shuffle = true;
+        options.no_geoip = true;
+        options.no_tcp_ping = true;
+        options.no_speed = true;
+
+        let summary = run(options).await.unwrap();
+
+        assert_eq!(summary.unique, 2);
+        assert_eq!(
+            std::fs::read_to_string(temp.path("parsed.txt"))
+                .unwrap()
+                .lines()
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn shuffle_seed_repeats_the_same_candidate_order() {
+        let run_with_seed = async |suffix: &str| {
+            let temp = TestDir::new();
+            let links = temp.path("links.txt");
+            std::fs::write(
+                &links,
+                concat!(
+                    "vless://01234567-89ab-cdef-0123-456789abcdef@first.example:443#first-node\n",
+                    "vless://11234567-89ab-cdef-0123-456789abcdef@second.example:443#second-node\n",
+                    "vless://21234567-89ab-cdef-0123-456789abcdef@third.example:443#third-node\n",
+                    "vless://31234567-89ab-cdef-0123-456789abcdef@fourth.example:443#fourth-node\n"
+                ),
+            )
+            .unwrap();
+            let mut options = cli();
+            options.file = Some(links.display().to_string());
+            options.sources = temp.path("missing-sources.json").display().to_string();
+            options.parsed_output = temp
+                .path(&format!("parsed-{suffix}.txt"))
+                .display()
+                .to_string();
+            options.shuffle_seed = Some(42);
+            options.no_geoip = true;
+            options.no_tcp_ping = true;
+            options.no_speed = true;
+
+            run(options).await.unwrap();
+            std::fs::read_to_string(temp.path(&format!("parsed-{suffix}.txt"))).unwrap()
+        };
+
+        assert_eq!(run_with_seed("a").await, run_with_seed("b").await);
+    }
+
+    #[tokio::test]
+    async fn run_resuming_at_geoip_skips_geoip_download_and_only_new_filter() {
+        let temp = TestDir::new();
+        let checkpoint_path = temp.path("geoip.checkpoint.json");
+        let mut saved_proxy = proxy(
+            "01234567-89ab-cdef-0123-456789abcdef",
+            "resume.example",
+            "US",
+        );
+        saved_proxy.name = "resumed-node".into();
+        saved_proxy.display = "resumed-node".into();
+        let mut checkpoint = checkpoint::Checkpoint::new();
+        checkpoint.record_stage(
+            checkpoint::PipelineStage::GeoIp,
+            Vec::new(),
+            vec![checkpoint::ProxySnapshot::from_proxy(&saved_proxy)],
+        );
+        checkpoint.save(&checkpoint_path).unwrap();
+
+        let output = temp.path("alive.txt");
+        std::fs::write(&output, format!("{}\n", saved_proxy.orig_url)).unwrap();
+        let mut options = cli();
+        options.resume = true;
+        options.checkpoint = Some(checkpoint_path.display().to_string());
+        options.geoip_db = Some(temp.path("missing-geoip.dat").display().to_string());
+        options.no_geoip = false;
+        options.no_tcp_ping = true;
+        options.no_speed = true;
+        options.only_new = true;
+        options.output = output.display().to_string();
+
+        let summary = run(options).await.unwrap();
+
+        assert!(summary.geo);
+        assert_eq!(summary.alive, 1);
+        assert!(std::fs::read_to_string(output)
+            .unwrap()
+            .contains("resume.example"));
+    }
+
+    #[tokio::test]
+    async fn run_does_not_write_an_empty_raw_subscription_file_for_direct_links() {
+        let temp = TestDir::new();
+        let links = temp.path("links.txt");
+        std::fs::write(
+            &links,
+            "vless://01234567-89ab-cdef-0123-456789abcdef@direct.example:443#direct-node\n",
+        )
+        .unwrap();
+        let sources = temp.path("sources.json");
+        std::fs::write(&sources, r#"{"3":[]}"#).unwrap();
+        let raw = temp.path("raw.txt");
+        let mut options = cli();
+        options.file = Some(links.display().to_string());
+        options.sources = sources.display().to_string();
+        options.raw_output = raw.display().to_string();
+        options.no_geoip = true;
+        options.no_tcp_ping = true;
+        options.no_speed = true;
+
+        let summary = run(options).await.unwrap();
+
+        assert_eq!(summary.fetch_loaded, 0);
+        assert!(summary.raw_file.is_none());
+        assert!(!raw.exists());
+    }
+
+    #[tokio::test]
+    async fn run_reports_only_new_output_read_errors() {
+        let temp = TestDir::new();
+        let links = temp.path("links.txt");
+        std::fs::write(
+            &links,
+            "vless://01234567-89ab-cdef-0123-456789abcdef@node.example:443#new-node\n",
+        )
+        .unwrap();
+        let output_directory = temp.path("alive-directory");
+        std::fs::create_dir(&output_directory).unwrap();
+        let mut options = cli();
+        options.file = Some(links.display().to_string());
+        options.sources = temp.path("missing-sources.json").display().to_string();
+        options.output = output_directory.display().to_string();
+        options.parsed_output = temp.path("parsed.txt").display().to_string();
+        options.no_geoip = true;
+        options.no_tcp_ping = true;
+        options.no_speed = true;
+        options.only_new = true;
+
+        let error = run(options).await.unwrap_err();
+
+        assert!(error.downcast_ref::<std::io::Error>().is_some());
+        assert!(output_directory.is_dir());
+    }
+
+    #[tokio::test]
+    async fn run_filters_resumed_tcp_results_by_max_ping_and_writes_rejected_proxy_dead() {
+        let temp = TestDir::new();
+        let checkpoint_path = temp.path("tcp.checkpoint.json");
+        let mut fast = proxy("01234567-89ab-cdef-0123-456789abcdef", "fast.example", "US");
+        fast.display = "fast-node".into();
+        fast.ping = Some(1);
+        let mut slow = proxy("11234567-89ab-cdef-0123-456789abcdef", "slow.example", "US");
+        slow.display = "slow-node".into();
+        slow.ping = Some(20);
+        let mut checkpoint = checkpoint::Checkpoint::new();
+        checkpoint.record_stage(
+            checkpoint::PipelineStage::TcpPing,
+            Vec::new(),
+            vec![
+                checkpoint::ProxySnapshot::from_proxy(&fast),
+                checkpoint::ProxySnapshot::from_proxy(&slow),
+            ],
+        );
+        checkpoint.save(&checkpoint_path).unwrap();
+        let mut options = cli();
+        options.resume = true;
+        options.checkpoint = Some(checkpoint_path.display().to_string());
+        options.output = temp.path("alive.txt").display().to_string();
+        options.dead = Some(temp.path("dead.txt").display().to_string());
+        options.max_ping = 5;
+        options.no_speed = true;
+
+        let summary = run(options).await.unwrap();
+
+        assert_eq!(summary.alive, 1);
+        assert_eq!(summary.dead_file.as_ref().map(|(_, count)| *count), Some(1));
+        let alive = std::fs::read_to_string(temp.path("alive.txt")).unwrap();
+        let dead = std::fs::read_to_string(temp.path("dead.txt")).unwrap();
+        assert!(alive.contains("fast-node"));
+        assert!(!alive.contains("slow-node"));
+        assert!(dead.contains("slow.example"));
+    }
+
+    #[tokio::test]
+    async fn run_completes_when_max_ping_rejects_every_resumed_tcp_result() {
+        let temp = TestDir::new();
+        let checkpoint_path = temp.path("all-slow.checkpoint.json");
+        let mut slow = proxy("01234567-89ab-cdef-0123-456789abcdef", "slow.example", "US");
+        slow.display = "slow-node".into();
+        slow.ping = Some(20);
+        let mut checkpoint = checkpoint::Checkpoint::new();
+        checkpoint.record_stage(
+            checkpoint::PipelineStage::TcpPing,
+            Vec::new(),
+            vec![checkpoint::ProxySnapshot::from_proxy(&slow)],
+        );
+        checkpoint.save(&checkpoint_path).unwrap();
+
+        let output = temp.path("alive.txt");
+        let dead = temp.path("dead.txt");
+        let mut options = cli();
+        options.resume = true;
+        options.checkpoint = Some(checkpoint_path.display().to_string());
+        options.output = output.display().to_string();
+        options.dead = Some(dead.display().to_string());
+        options.max_ping = 5;
+        options.no_speed = true;
+
+        let summary = run(options).await.unwrap();
+
+        assert_eq!(summary.alive, 0);
+        assert_eq!(summary.good, 0);
+        assert_eq!(summary.dead_file.as_ref().map(|(_, count)| *count), Some(1));
+        assert_eq!(std::fs::read_to_string(output).unwrap(), "");
+        assert!(std::fs::read_to_string(dead)
+            .unwrap()
+            .contains("slow.example"));
+        let saved = checkpoint::Checkpoint::load(checkpoint_path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.stage, checkpoint::PipelineStage::Complete);
+        assert!(saved.final_links.is_empty());
+    }
+
     fn proxy(id: &str, host: &str, country: &str) -> Proxy {
         parse::parse_link(&format!(
             "vless://{id}@{host}:443?type=tcp&security=none#{id}"
@@ -1410,6 +2336,24 @@ PY
             proxy
         })
         .unwrap()
+    }
+
+    #[test]
+    fn outbound_failure_shape_keeps_protocol_fields_and_excludes_secrets() {
+        let vless = proxy(
+            "01234567-89ab-cdef-0123-456789abcdef",
+            "proxy.example",
+            "US",
+        );
+        assert_eq!(
+            safe_outbound_shape(&vless),
+            "vless: transport=raw, security=none"
+        );
+        assert!(!safe_outbound_shape(&vless).contains("01234567"));
+
+        let ss = parse::parse_link("ss://YWVzLTI1Ni1nY206c2VjcmV0@proxy.example:8388").unwrap();
+        assert_eq!(safe_outbound_shape(&ss), "shadowsocks: method=aes-256-gcm");
+        assert!(!safe_outbound_shape(&ss).contains("secret"));
     }
 
     fn cli() -> Cli {
@@ -1458,6 +2402,18 @@ PY
     }
 
     #[test]
+    fn resolve_default_from_uses_bin_path_without_an_executable() {
+        let dir = TestDir::new();
+        let bin_dir = dir.path("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let name = Path::new("geoip.dat");
+        let bin_copy = bin_dir.join(name);
+        std::fs::write(&bin_copy, b"bin").unwrap();
+
+        assert_eq!(resolve_default_from(name, None, &bin_dir), bin_copy);
+    }
+
+    #[test]
     fn default_runtime_paths_are_next_to_the_current_executable() {
         let exe_dir = std::env::current_exe()
             .unwrap()
@@ -1469,6 +2425,113 @@ PY
             default_core_path().unwrap(),
             exe_dir.join(xray::core_bin_name())
         );
+    }
+
+    #[test]
+    fn default_asset_and_geoip_paths_cover_parentless_executable_and_override() {
+        assert_eq!(
+            default_asset_path(Path::new(""), "geoip.dat"),
+            PathBuf::from("./geoip.dat")
+        );
+        assert_eq!(
+            default_asset_path(Path::new("/opt/proxy-rs/proxy-rs"), "xray"),
+            PathBuf::from("/opt/proxy-rs/xray")
+        );
+        assert_eq!(
+            geoip_db_path(Some("custom/geoip.dat")).unwrap(),
+            PathBuf::from("custom/geoip.dat")
+        );
+        assert_eq!(geoip_db_path(None).unwrap(), default_geoip_path().unwrap());
+    }
+
+    #[tokio::test]
+    async fn run_writes_empty_outputs_and_completes_checkpoint_when_tcp_rejects_all() {
+        let temp = TestDir::new();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let links = temp.path("links.txt");
+        std::fs::write(
+            &links,
+            format!("vless://01234567-89ab-cdef-0123-456789abcdef@127.0.0.1:{port}#closed-port\n"),
+        )
+        .unwrap();
+        let checkpoint_path = temp.path("run.checkpoint.json");
+        let json_path = temp.path("alive.json");
+        let dead_path = temp.path("dead.txt");
+        let report_path = temp.path("sources-report.json");
+        let mut options = cli();
+        options.file = Some(links.display().to_string());
+        options.sources = temp.path("missing-sources.json").display().to_string();
+        options.checkpoint = Some(checkpoint_path.display().to_string());
+        options.json_output = Some(json_path.display().to_string());
+        options.dead = Some(dead_path.display().to_string());
+        options.source_report = Some(report_path.display().to_string());
+        options.no_geoip = true;
+        options.no_speed = true;
+        options.tcp_timeout = 0.2;
+        options.tcp_retries = 0;
+
+        let summary = run(options).await.unwrap();
+
+        assert_eq!(summary.tcp_total, 1);
+        assert_eq!(summary.tcp_alive, 0);
+        assert_eq!(summary.alive, 0);
+        assert_eq!(std::fs::read_to_string(&json_path).unwrap(), "[]");
+        assert!(std::fs::read_to_string(&dead_path)
+            .unwrap()
+            .contains(&format!("127.0.0.1:{port}")));
+        let report: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(report_path).unwrap()).unwrap();
+        assert_eq!(report["sources"].as_array().unwrap().len(), 0);
+        let checkpoint = checkpoint::Checkpoint::load(checkpoint_path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(checkpoint.stage, checkpoint::PipelineStage::Complete);
+        assert!(checkpoint.final_links.is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_restores_speed_checkpoint_and_uses_proxy_name_for_clash_fallback() {
+        let temp = TestDir::new();
+        let checkpoint_path = temp.path("speed.checkpoint.json");
+        let mut slower = proxy("01234567-89ab-cdef-0123-456789abcdef", "slow.example", "DE");
+        slower.name = "slow-name".into();
+        slower.display.clear();
+        slower.ping = Some(20);
+        slower.speed_kbs = 100.0;
+        let mut faster = proxy("11234567-89ab-cdef-0123-456789abcdef", "fast.example", "US");
+        faster.name = "fast-name".into();
+        faster.display = "fast-marker".into();
+        faster.ping = Some(5);
+        faster.speed_kbs = 200.0;
+        let mut checkpoint = checkpoint::Checkpoint::new();
+        checkpoint.record_stage(
+            checkpoint::PipelineStage::Speed,
+            Vec::new(),
+            vec![
+                checkpoint::ProxySnapshot::from_proxy(&slower),
+                checkpoint::ProxySnapshot::from_proxy(&faster),
+            ],
+        );
+        checkpoint.save(&checkpoint_path).unwrap();
+        let mut options = cli();
+        options.resume = true;
+        options.checkpoint = Some(checkpoint_path.display().to_string());
+        options.no_tcp_ping = true;
+        options.clash = Some(temp.path("clash.yaml").display().to_string());
+        options.good_output = temp.path("good.txt").display().to_string();
+        options.output = temp.path("alive.txt").display().to_string();
+
+        let summary = run(options).await.unwrap();
+
+        assert_eq!(summary.good, 2);
+        assert_eq!(summary.avg_kbs, 150.0);
+        assert_eq!(summary.median_kbs, 150.0);
+        let good = std::fs::read_to_string(temp.path("good.txt")).unwrap();
+        assert!(good.find("fast.example").unwrap() < good.find("slow.example").unwrap());
+        let clash = std::fs::read_to_string(temp.path("clash.yaml")).unwrap();
+        assert!(clash.contains("slow-name"));
     }
 
     #[test]
@@ -1510,6 +2573,36 @@ PY
     }
 
     #[test]
+    fn source_report_writer_returns_filesystem_errors() {
+        let dir = TestDir::new();
+        let destination = dir.path("report-directory");
+        std::fs::create_dir(&destination).unwrap();
+        let report = source_report::SourceQualityReport::new();
+        let mut options = cli();
+        options.source_report = Some(destination.display().to_string());
+
+        let error = write_source_report(&options, &report).unwrap_err();
+
+        assert!(error.downcast_ref::<std::io::Error>().is_some());
+        assert!(destination.is_dir());
+    }
+
+    #[test]
+    fn checkpoint_writer_returns_filesystem_errors() {
+        let dir = TestDir::new();
+        let destination = dir.path("checkpoint-directory");
+        std::fs::create_dir(&destination).unwrap();
+        let checkpoint = checkpoint::Checkpoint::new();
+        let mut options = cli();
+        options.checkpoint = Some(destination.display().to_string());
+
+        let error = save_checkpoint(&options, &checkpoint).unwrap_err();
+
+        assert!(error.to_string().contains("atomically write checkpoint"));
+        assert!(destination.is_dir());
+    }
+
+    #[test]
     fn protocol_and_country_filters_are_case_insensitive_and_composable() {
         let mut proxies = vec![
             proxy("01234567-89ab-cdef-0123-456789abcdef", "de.example", " de "),
@@ -1546,8 +2639,7 @@ PY
             "known.example",
             "DE",
         );
-        let same_identity_different_name =
-            "vless://01234567-89ab-cdef-0123-456789abcdef@known.example:443?type=tcp&security=none#renamed";
+        let same_identity_different_name = "vless://01234567-89ab-cdef-0123-456789abcdef@known.example:443?type=tcp&security=none#renamed";
         let mut candidates = vec![
             known.clone(),
             proxy("11234567-89ab-cdef-0123-456789abcdef", "new.example", "DE"),
@@ -1616,5 +2708,30 @@ PY
             limited.iter().map(|proxy| proxy.ping).collect::<Vec<_>>(),
             [Some(20), Some(100)]
         );
+    }
+
+    #[test]
+    fn max_ping_keeps_hysteria_without_tcp_rtt_and_rejects_unknown_tcp_rtt() {
+        let mut hysteria1 = proxy("01234567-89ab-cdef-0123-456789abcdef", "hy1.example", "DE");
+        hysteria1.proto = "hysteria";
+        hysteria1.ping = None;
+        let mut hysteria2 = proxy("11234567-89ab-cdef-0123-456789abcdef", "hy2.example", "US");
+        hysteria2.proto = "hysteria2";
+        hysteria2.ping = None;
+        let mut unknown_tcp = proxy(
+            "21234567-89ab-cdef-0123-456789abcdef",
+            "unknown.example",
+            "FR",
+        );
+        unknown_tcp.ping = None;
+        let mut candidates = vec![hysteria1, hysteria2, unknown_tcp];
+
+        let rejected = retain_within_max_ping(&mut candidates, 100);
+
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].proto, "hysteria");
+        assert_eq!(candidates[1].proto, "hysteria2");
+        assert_eq!(rejected.len(), 1);
+        assert!(rejected[0].contains("unknown.example"));
     }
 }

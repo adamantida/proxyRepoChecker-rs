@@ -91,6 +91,7 @@ def main() -> None:
     shutil.copy2(binary, staging / binary.name)
     shutil.copy2(ROOT / "bin" / "sources.json", staging / "sources.json")
     shutil.copy2(ROOT / "CHANGELOG.md", staging / "CHANGELOG.md")
+    shutil.copy2(ROOT / "LICENSE", staging / "LICENSE")
     for readme in README_FILES:
         shutil.copy2(ROOT / readme, staging / readme)
     shutil.copytree(ROOT / "docs", staging / "docs")
