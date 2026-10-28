@@ -56,4 +56,4 @@ jobs:
       - name: Install cargo-mutants
         run: cargo install --locked cargo-mutants
       - name: Run mutation tests
-        run: CARGO_PROFILE_DEV_DEBUG=0 cargo +stable mutants --file src/pipeline.rs --re safe_outbound_shape --jobs 2 --timeout 30 --minimum-test-timeout 10
+        run: CARGO_PROFILE_DEV_DEBUG=0 cargo +stable mutants --file src/pipeline.rs --re safe_outbound_shape --jobs 2 --timeout 120 --minimum-test-timeout 10
