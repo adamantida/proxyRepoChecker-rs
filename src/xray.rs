@@ -1998,3 +1998,812 @@ mod tests {
             ("missing required field", "missing_config_value"),
             ("invalid configuration", "invalid_config_value"),
             ("private.example:443", "config_rejected"),
+        ] {
+            assert_eq!(bad_outbound_error_kind(log), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn run_all_processes_nonempty_batch_and_returns_failed_proxies_as_empty() {
+        let dir = TestDir::new();
+        let work = dir.path("work");
+        std::fs::create_dir(&work).unwrap();
+        let checker = test_checker(dir.path("missing-xray"), work, Duration::from_secs(1));
+
+        let result = checker
+            .run_all(vec![sample_proxy()], 1, 1, speed_opts(), "test", None)
+            .await
+            .unwrap();
+
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_all_tolerates_progress_labels_with_unmatched_braces() {
+        let dir = TestDir::new();
+        let checker = test_checker(
+            dir.path("missing-xray"),
+            dir.path("work"),
+            Duration::from_secs(1),
+        );
+
+        let result = checker
+            .run_all(vec![sample_proxy()], 1, 1, speed_opts(), "{unknown}", None)
+            .await
+            .unwrap();
+
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_all_returns_immediately_for_an_empty_input() {
+        let dir = TestDir::new();
+        let checker = test_checker(
+            dir.path("missing-xray"),
+            dir.path("work"),
+            Duration::from_secs(1),
+        );
+
+        let result = checker
+            .run_all(Vec::new(), 0, 0, speed_opts(), "empty", None)
+            .await
+            .unwrap();
+
+        assert!(result.is_empty());
+        assert!(!dir.path("work").exists());
+    }
+
+    #[test]
+    fn checker_new_validates_core_and_work_directory() {
+        let dir = TestDir::new();
+        let missing_core = dir.path("missing-xray");
+        let missing_core_cli = Cli::try_parse_from([
+            "proxy-rs",
+            "--core",
+            missing_core.to_str().unwrap(),
+            "--workdir",
+            dir.path("work").to_str().unwrap(),
+        ])
+        .unwrap();
+        assert!(Checker::new(&missing_core_cli)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("не найдено ядро"));
+
+        let core = dir.path("xray");
+        std::fs::write(&core, b"fixture").unwrap();
+        let work = dir.path("work");
+        let cli = Cli::try_parse_from([
+            "proxy-rs",
+            "--core",
+            core.to_str().unwrap(),
+            "--workdir",
+            work.to_str().unwrap(),
+        ])
+        .unwrap();
+        let checker = Checker::new(&cli).unwrap();
+        assert_eq!(checker.core, core);
+        assert!(work.is_dir());
+
+        let blocked_parent = dir.path("blocked-parent");
+        std::fs::write(&blocked_parent, b"file").unwrap();
+        let blocked_cli = Cli::try_parse_from([
+            "proxy-rs",
+            "--core",
+            core.to_str().unwrap(),
+            "--workdir",
+            blocked_parent.join("work").to_str().unwrap(),
+        ])
+        .unwrap();
+        assert!(Checker::new(&blocked_cli)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("не удалось создать"));
+    }
+
+    #[tokio::test]
+    async fn alloc_port_skips_a_port_already_bound_by_another_process() {
+        let dir = TestDir::new();
+        let work = dir.path("work");
+        std::fs::create_dir(&work).unwrap();
+        let occupied = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let occupied_port = occupied.local_addr().unwrap().port();
+        let checker = test_checker(dir.path("missing-xray"), work, Duration::from_secs(1));
+        checker.next.store(occupied_port, Ordering::Relaxed);
+
+        let allocated = checker.alloc_port().await;
+
+        assert_ne!(allocated, occupied_port);
+        assert!(std::net::TcpListener::bind(("127.0.0.1", allocated)).is_ok());
+    }
+
+    #[tokio::test]
+    async fn alloc_port_wraps_to_the_base_port_at_the_upper_boundary() {
+        let dir = TestDir::new();
+        let work = dir.path("work");
+        std::fs::create_dir(&work).unwrap();
+        let checker = test_checker(dir.path("missing-xray"), work, Duration::from_secs(1));
+        checker.next.store(65_000, Ordering::Relaxed);
+
+        let allocated = checker.alloc_port().await;
+
+        assert!(allocated >= 65_000 || allocated == checker.base_port);
+    }
+
+    #[tokio::test]
+    async fn alloc_port_retries_when_probe_finds_a_listener_after_bind_check() {
+        let dir = TestDir::new();
+        let work = dir.path("work");
+        std::fs::create_dir(&work).unwrap();
+        let checker = test_checker(dir.path("missing-xray"), work, Duration::from_secs(1));
+        let calls = AtomicUsize::new(0);
+        let probed_ports = std::sync::Mutex::new(Vec::new());
+
+        let allocated = checker
+            .alloc_port_with(|port| {
+                probed_ports.lock().unwrap().push(port);
+                let attempt = calls.fetch_add(1, Ordering::Relaxed);
+                async move { attempt == 0 }
+            })
+            .await;
+
+        let probed_ports = probed_ports.into_inner().unwrap();
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
+        assert_eq!(probed_ports.len(), 2);
+        assert_eq!(allocated, probed_ports[1]);
+    }
+
+    #[test]
+    fn speed_sort_is_descending_and_treats_nan_as_equal() {
+        let mut slow = sample_proxy();
+        slow.speed_kbs = 1.0;
+        let mut nan = sample_proxy();
+        nan.speed_kbs = f64::NAN;
+        let mut fast = sample_proxy();
+        fast.speed_kbs = 5.0;
+        assert_eq!(
+            compare_speed_descending(&fast, &slow),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            compare_speed_descending(&fast, &nan),
+            std::cmp::Ordering::Equal
+        );
+        let mut proxies = vec![slow, fast, nan];
+
+        sort_by_speed(&mut proxies);
+
+        assert_eq!(proxies.len(), 3);
+        assert!(proxies.iter().any(|proxy| proxy.speed_kbs.is_nan()));
+    }
+
+    #[test]
+    fn speed_sort_orders_finite_results_from_fastest_to_slowest() {
+        let mut slow = sample_proxy();
+        slow.name = "slow".into();
+        slow.speed_kbs = 1.5;
+        let mut fast = sample_proxy();
+        fast.name = "fast".into();
+        fast.speed_kbs = 9.0;
+        let mut medium = sample_proxy();
+        medium.name = "medium".into();
+        medium.speed_kbs = 4.25;
+        let mut proxies = vec![slow, fast, medium];
+
+        sort_by_speed(&mut proxies);
+
+        let names: Vec<_> = proxies.iter().map(|proxy| proxy.name.as_str()).collect();
+        assert_eq!(names, ["fast", "medium", "slow"]);
+    }
+
+    #[tokio::test]
+    async fn progress_reporter_skips_tty_and_stops_after_all_items_finish() {
+        let good = Arc::new(Mutex::new(Vec::new()));
+        assert!(spawn_progress_reporter(
+            ProgressBar::hidden(),
+            Arc::clone(&good),
+            Instant::now(),
+            true,
+            Duration::from_millis(1),
+        )
+        .is_none());
+
+        let pb = ProgressBar::hidden();
+        pb.set_length(1);
+        pb.inc(1);
+        spawn_progress_reporter(pb, good, Instant::now(), false, Duration::from_millis(1))
+            .unwrap()
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn progress_reporter_finishes_with_a_nonempty_good_counter() {
+        let good = Arc::new(Mutex::new(vec![sample_proxy(), sample_proxy()]));
+        let pb = ProgressBar::hidden();
+        pb.set_length(2);
+        pb.inc(2);
+
+        let reporter =
+            spawn_progress_reporter(pb, good, Instant::now(), false, Duration::from_millis(1))
+                .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), reporter)
+            .await
+            .expect("reporter should stop when all items are done")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn progress_reporter_guard_stops_a_live_non_tty_task() {
+        let good = Arc::new(Mutex::new(Vec::new()));
+        let pb = ProgressBar::hidden();
+        let reporter =
+            spawn_progress_reporter(pb, good, Instant::now(), false, Duration::from_secs(60))
+                .expect("non-TTY runs must start a periodic reporter");
+        tokio::task::yield_now().await;
+        assert!(!reporter.is_finished());
+
+        ReporterTask(Some(reporter)).stop().await;
+    }
+
+    #[test]
+    fn read_output_formats_wait_errors() {
+        let message = format_read_output(Err(std::io::Error::other("fixture wait failure")));
+        assert!(message.contains("чтение вывода ядра"));
+        assert!(message.contains("fixture wait failure"));
+    }
+
+    #[test]
+    fn read_output_formats_successful_stdout_and_stderr() {
+        let output = std::process::Output {
+            status: std::process::ExitStatus::default(),
+            stdout: b"stdout fixture\n".to_vec(),
+            stderr: b"stderr fixture\n".to_vec(),
+        };
+
+        let message = format_read_output(Ok(output));
+
+        assert_eq!(message, "stdout fixture\n\nstderr fixture\n");
+    }
+
+    #[tokio::test]
+    async fn bad_outbound_failure_falls_back_when_tag_is_not_in_mapping() {
+        let dir = TestDir::new();
+        let mut checker = test_checker(
+            dir.path("missing-xray"),
+            dir.path("work"),
+            Duration::from_secs(1),
+        );
+        Arc::get_mut(&mut checker).unwrap().base_port = u16::MAX;
+        let unmatched_port = if checker.base_port == u16::MAX {
+            checker.base_port - 1
+        } else {
+            checker.base_port + 1
+        };
+
+        let result = Checker::handle_failure(
+            &checker,
+            &format!("failed to build outbound config with tag: out_{unmatched_port}"),
+            vec![(sample_proxy(), checker.base_port)],
+            speed_opts(),
+            ProgressBar::hidden(),
+        )
+        .await;
+
+        assert!(result.is_empty());
+        assert_eq!(checker.bad_outbounds(), 0);
+    }
+
+    #[tokio::test]
+    async fn bad_outbound_fallback_handles_maximum_base_port() {
+        let dir = TestDir::new();
+        let mut checker = test_checker(
+            dir.path("missing-xray"),
+            dir.path("work"),
+            Duration::from_secs(1),
+        );
+        Arc::get_mut(&mut checker).unwrap().base_port = u16::MAX;
+
+        let result = Checker::handle_failure(
+            &checker,
+            "failed to build outbound config with tag: out_65534",
+            vec![(sample_proxy(), u16::MAX)],
+            speed_opts(),
+            ProgressBar::hidden(),
+        )
+        .await;
+
+        assert!(result.is_empty());
+        assert_eq!(checker.bad_outbounds(), 0);
+    }
+
+    #[tokio::test]
+    async fn bad_outbound_failure_ignores_a_tag_with_an_overflowing_port() {
+        let dir = TestDir::new();
+        let checker = test_checker(
+            dir.path("missing-xray"),
+            dir.path("work"),
+            Duration::from_secs(1),
+        );
+        let progress = ProgressBar::hidden();
+        progress.set_length(1);
+
+        let result = Checker::handle_failure(
+            &checker,
+            "failed to build outbound config with tag: out_999999",
+            vec![(sample_proxy(), checker.base_port)],
+            speed_opts(),
+            progress.clone(),
+        )
+        .await;
+
+        assert!(result.is_empty());
+        assert_eq!(checker.bad_outbounds(), 0);
+        assert_eq!(progress.position(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_all_splits_a_batch_when_the_core_exits_before_startup() {
+        let dir = TestDir::new();
+        let work = dir.path("work");
+        std::fs::create_dir(&work).unwrap();
+        let core = dir.path("exits-before-startup");
+        executable_fixture(&core, "Xray startup fixture", 1);
+        let checker = test_checker(core, work.clone(), Duration::from_secs(1));
+
+        let result = checker
+            .run_all(
+                vec![sample_proxy(), sample_proxy()],
+                2,
+                1,
+                speed_opts(),
+                "test",
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_empty());
+        assert_eq!(std::fs::read_dir(work).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn build_config_pairs_each_inbound_with_its_outbound_and_route() {
+        let checker = Checker {
+            core: PathBuf::new(),
+            hysteria1_core: PathBuf::new(),
+            no_hysteria1_download: true,
+            hysteria1_core_ready: tokio::sync::OnceCell::new(),
+            work: PathBuf::new(),
+            speed_threads: 1,
+            start_timeout: Duration::from_secs(1),
+            base_port: 12000,
+            next: AtomicU16::new(12000),
+            bad_re: Regex::new("out_\\d+").unwrap(),
+            bad_outbounds: AtomicUsize::new(0),
+            bad_outbound_rejections: Mutex::new(HashMap::new()),
+            speed_unchecked: Mutex::new(HashSet::new()),
+            speed_measurements: Mutex::new(HashMap::new()),
+            speed_probe_results: Mutex::new(HashMap::new()),
+        };
+        let config = checker.build_config(&[(sample_proxy(), 12001)]);
+        assert_eq!(config["inbounds"][0]["port"], 12001);
+        assert_eq!(config["inbounds"][0]["protocol"], "socks");
+        assert_eq!(config["outbounds"][0]["tag"], "out_12001");
+        assert_eq!(config["outbounds"][0]["protocol"], "vless");
+        assert_eq!(config["outbounds"][0]["streamSettings"]["network"], "ws");
+        assert_eq!(config["routing"]["rules"][0]["inboundTag"][0], "in_12001");
+        assert_eq!(config["routing"]["rules"][0]["outboundTag"], "out_12001");
+    }
+
+    #[test]
+    fn build_config_translates_hysteria2_to_xrays_hysteria_outbound() {
+        let checker = Checker {
+            core: PathBuf::new(),
+            hysteria1_core: PathBuf::new(),
+            no_hysteria1_download: true,
+            hysteria1_core_ready: tokio::sync::OnceCell::new(),
+            work: PathBuf::new(),
+            speed_threads: 1,
+            start_timeout: Duration::from_secs(1),
+            base_port: 12000,
+            next: AtomicU16::new(12000),
+            bad_re: Regex::new("out_\\d+").unwrap(),
+            bad_outbounds: AtomicUsize::new(0),
+            bad_outbound_rejections: Mutex::new(HashMap::new()),
+            speed_unchecked: Mutex::new(HashSet::new()),
+            speed_measurements: Mutex::new(HashMap::new()),
+            speed_probe_results: Mutex::new(HashMap::new()),
+        };
+        let mut proxy = sample_proxy();
+        proxy.proto = "hysteria2";
+        proxy.settings = json!({"version": 2, "address": "hy2.example", "port": 443});
+        proxy.stream = Some(json!({
+            "network": "hysteria",
+            "security": "tls",
+            "tlsSettings": {"serverName": "sni.example"},
+            "hysteriaSettings": {"version": 2, "auth": "test-password"}
+        }));
+
+        let config = checker.build_config(&[(proxy, 12001)]);
+
+        assert_eq!(config["outbounds"][0]["protocol"], "hysteria");
+        assert_eq!(config["outbounds"][0]["settings"]["version"], 2);
+        assert_eq!(config["outbounds"][0]["settings"]["address"], "hy2.example");
+        assert_eq!(config["outbounds"][0]["settings"]["port"], 443);
+        assert_eq!(
+            config["outbounds"][0]["streamSettings"]["network"],
+            "hysteria"
+        );
+        assert_eq!(
+            config["outbounds"][0]["streamSettings"]["hysteriaSettings"]["auth"],
+            "test-password"
+        );
+    }
+
+    #[test]
+    fn build_config_omits_stream_settings_when_proxy_has_none() {
+        let checker = Checker {
+            core: PathBuf::new(),
+            hysteria1_core: PathBuf::new(),
+            no_hysteria1_download: true,
+            hysteria1_core_ready: tokio::sync::OnceCell::new(),
+            work: PathBuf::new(),
+            speed_threads: 1,
+            start_timeout: Duration::from_secs(1),
+            base_port: 12000,
+            next: AtomicU16::new(12000),
+            bad_re: Regex::new("out_\\d+").unwrap(),
+            bad_outbounds: AtomicUsize::new(0),
+            bad_outbound_rejections: Mutex::new(HashMap::new()),
+            speed_unchecked: Mutex::new(HashSet::new()),
+            speed_measurements: Mutex::new(HashMap::new()),
+            speed_probe_results: Mutex::new(HashMap::new()),
+        };
+        let mut proxy = sample_proxy();
+        proxy.stream = None;
+
+        let config = checker.build_config(&[(proxy, 12001)]);
+
+        assert!(config["outbounds"][0].get("streamSettings").is_none());
+    }
+
+    #[tokio::test]
+    async fn run_all_empty_input_returns_without_starting_xray() {
+        let checker = Arc::new(Checker {
+            core: PathBuf::new(),
+            hysteria1_core: PathBuf::new(),
+            no_hysteria1_download: true,
+            hysteria1_core_ready: tokio::sync::OnceCell::new(),
+            work: PathBuf::new(),
+            speed_threads: 1,
+            start_timeout: Duration::from_secs(1),
+            base_port: 12000,
+            next: AtomicU16::new(12000),
+            bad_re: Regex::new("out_\\d+").unwrap(),
+            bad_outbounds: AtomicUsize::new(0),
+            bad_outbound_rejections: Mutex::new(HashMap::new()),
+            speed_unchecked: Mutex::new(HashSet::new()),
+            speed_measurements: Mutex::new(HashMap::new()),
+            speed_probe_results: Mutex::new(HashMap::new()),
+        });
+        let got = checker
+            .run_all(
+                Vec::new(),
+                10,
+                1,
+                SpeedOpts {
+                    primary: None,
+                    connect_timeout_s: 1.0,
+                    timeout_s: 1.0,
+                    max_mb: 1.0,
+                    min_kb: 0.0,
+                    speed_probes: 1,
+                },
+                "test",
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(got.is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_all_routes_hysteria1_to_its_runtime_without_starting_xray() {
+        let dir = TestDir::new();
+        let work = dir.path("work");
+        std::fs::create_dir(&work).unwrap();
+        let checker = test_checker(
+            dir.path("unused-xray"),
+            work.clone(),
+            Duration::from_secs(1),
+        );
+        let proxy = crate::parse::parse_link(
+            "hysteria://hy.example:443?auth=token&upmbps=10&downmbps=20#h1",
+        )
+        .unwrap();
+
+        let got = checker
+            .run_all(vec![proxy], 1, 1, speed_opts(), "test", None)
+            .await
+            .unwrap();
+
+        // The isolated test explicitly disables downloads. The Hysteria route
+        // must be attempted and accounted for, without trying to run Xray.
+        assert!(got.is_empty());
+        assert_eq!(checker.speed_unchecked_keys().len(), 1);
+        assert_eq!(std::fs::read_dir(work).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn run_all_separates_hysteria_and_unverified_protocols_from_xray_checks() {
+        let dir = TestDir::new();
+        let work = dir.path("work");
+        std::fs::create_dir(&work).unwrap();
+        let checker = test_checker(
+            dir.path("missing-xray"),
+            work.clone(),
+            Duration::from_secs(1),
+        );
+        let hysteria1 = crate::parse::parse_link(
+            "hysteria://hy.example:443?auth=token&upmbps=10&downmbps=20#h1",
+        )
+        .unwrap();
+        let hysteria2_gecko = crate::parse::parse_link(
+            "hysteria2://token@hy2.example:443?obfs=gecko&obfs-password=secret#h2-gecko",
+        )
+        .unwrap();
+        let mut xray_checked = sample_proxy();
+        xray_checked.proto = "vless";
+
+        let got = checker
+            .run_all(
+                vec![hysteria1.clone(), hysteria2_gecko.clone(), xray_checked],
+                3,
+                1,
+                speed_opts(),
+                "mixed protocols",
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(got.is_empty());
+        let unchecked = checker.speed_unchecked_keys();
+        assert!(unchecked.contains(&hysteria1.key()));
+        assert!(unchecked.contains(&hysteria2_gecko.key()));
+        assert_eq!(unchecked.len(), 2);
+        assert_eq!(std::fs::read_dir(work).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_all_filters_slow_proxies_and_reports_good_file_write_errors() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TestDir::new();
+        let work = dir.path("work");
+        std::fs::create_dir(&work).unwrap();
+        let core = dir.path("mock-xray");
+        let script = r##"#!/bin/sh
+if [ "$1" = version ]; then
+  echo 'Xray mock'
+  exit 0
+fi
+exec python3 - "$3" <<'PY'
+import json, socket, sys, threading
+port = int(json.load(open(sys.argv[1]))["inbounds"][0]["port"])
+server = socket.socket()
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server.bind(("127.0.0.1", port))
+server.listen()
+def exact(client, count):
+    data = b""
+    while len(data) < count:
+        part = client.recv(count - len(data))
+        if not part:
+            raise EOFError()
+        data += part
+    return data
+def handle(client):
+    try:
+        _, methods = exact(client, 2)
+        exact(client, methods)
+        client.sendall(b"\x05\x00")
+        _, _, _, address_type = exact(client, 4)
+        if address_type == 1:
+            exact(client, 4)
+        elif address_type == 3:
+            length = exact(client, 1)[0]
+            exact(client, length)
+        elif address_type == 4:
+            exact(client, 16)
+        exact(client, 2)
+        client.sendall(b"\x05\x00\x00\x01\x7f\x00\x00\x01\x00\x00")
+        request = b""
+        while b"\r\n\r\n" not in request:
+            part = client.recv(4096)
+            if not part:
+                return
+            request += part
+        body = b"x" * 2048
+        client.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2048\r\nConnection: close\r\n\r\n" + body)
+    except Exception:
+        pass
+    finally:
+        client.close()
+while True:
+    client, _ = server.accept()
+    threading.Thread(target=handle, args=(client,), daemon=True).start()
+PY
+"##;
+        std::fs::write(&core, script).unwrap();
+        let mut permissions = std::fs::metadata(&core).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&core, permissions).unwrap();
+
+        let checker = test_checker(core, work.clone(), Duration::from_secs(3));
+        let good_path = dir.path("good.txt");
+        let proxies = checker
+            .run_all(
+                vec![sample_proxy()],
+                1,
+                1,
+                SpeedOpts {
+                    primary: Some("http://example.test/download".into()),
+                    connect_timeout_s: 1.0,
+                    timeout_s: 2.0,
+                    max_mb: 0.5,
+                    min_kb: 1.0,
+                    speed_probes: 1,
+                },
+                "test",
+                Some(good_path.to_string_lossy().into_owned()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(proxies.len(), 1);
+        assert!(proxies[0].speed_kbs >= 1.0);
+        assert_eq!(
+            std::fs::read_to_string(good_path).unwrap(),
+            format!("{}\n", crate::output::line(&proxies[0], true))
+        );
+        let previous_good = std::fs::read_to_string(dir.path("good.txt")).unwrap();
+        assert_eq!(std::fs::read_dir(&work).unwrap().count(), 0);
+
+        let slow = checker
+            .run_all(
+                vec![sample_proxy()],
+                1,
+                1,
+                SpeedOpts {
+                    primary: Some("http://example.test/download".into()),
+                    connect_timeout_s: 1.0,
+                    timeout_s: 2.0,
+                    max_mb: 0.5,
+                    min_kb: f64::MAX,
+                    speed_probes: 1,
+                },
+                "slow proxy",
+                Some(dir.path("good.txt").to_string_lossy().into_owned()),
+            )
+            .await
+            .unwrap();
+        assert!(slow.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(dir.path("good.txt")).unwrap(),
+            previous_good,
+            "an empty speed result must not erase the last good output"
+        );
+
+        let invalid_good_path = dir.path("good-directory");
+        std::fs::create_dir(&invalid_good_path).unwrap();
+        let error = checker
+            .run_all(
+                vec![sample_proxy(), sample_proxy()],
+                1,
+                2,
+                SpeedOpts {
+                    primary: Some("http://example.test/download".into()),
+                    connect_timeout_s: 1.0,
+                    timeout_s: 2.0,
+                    max_mb: 0.5,
+                    min_kb: 1.0,
+                    speed_probes: 1,
+                },
+                "write error",
+                Some(invalid_good_path.to_string_lossy().into_owned()),
+            )
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("ошибка промежуточной записи good-файла"));
+        assert_eq!(std::fs::read_dir(work).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn reporter_stop_handles_missing_task_and_aborts_running_task() {
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        struct DropFlag(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for DropFlag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        ReporterTask(None).stop().await;
+
+        let flag = DropFlag(Arc::clone(&dropped));
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _flag = flag;
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        });
+        started_rx.await.unwrap();
+        ReporterTask(Some(task)).stop().await;
+
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn progress_reporter_keeps_reporting_until_all_items_finish() {
+        let good = Arc::new(Mutex::new(vec![sample_proxy()]));
+        let pb = ProgressBar::hidden();
+        pb.set_length(2);
+        let reporter = spawn_progress_reporter(
+            pb.clone(),
+            good,
+            Instant::now(),
+            false,
+            Duration::from_millis(1),
+        )
+        .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !reporter.is_finished() {
+                pb.inc(1);
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("reporter should exit after progress reaches the total");
+        reporter.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn bad_outbound_error_splits_unmatched_batch_and_cleans_configs() {
+        let dir = TestDir::new();
+        let work = dir.path("work");
+        std::fs::create_dir(&work).unwrap();
+        let checker = test_checker(
+            dir.path("missing-xray"),
+            work.clone(),
+            Duration::from_secs(1),
+        );
+        let pb = ProgressBar::hidden();
+        pb.set_length(2);
+        let result = Checker::handle_failure(
+            &checker,
+            "fixture core exit without an outbound tag",
+            vec![
+                (sample_proxy(), checker.base_port),
+                (sample_proxy(), checker.base_port.wrapping_add(1)),
+            ],
+            speed_opts(),
+            pb.clone(),
+        )
+        .await;
+
+        assert!(result.is_empty());
+        assert_eq!(checker.bad_outbounds(), 0);
+        assert_eq!(pb.position(), 2);
+        assert_eq!(std::fs::read_dir(work).unwrap().count(), 0);
+    }
+}
