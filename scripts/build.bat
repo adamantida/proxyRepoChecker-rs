@@ -127,7 +127,7 @@ set "T=%~2"
 set "TARGET_PLATFORM="
 set "NATIVE=0"
 if /i "%T%"=="%HOST%" set "NATIVE=1"
-if "%NATIVE%"=="1" (echo.^> Building %P% (%T%) [native]) else echo.^> Building %P% (%T%) [cross]
+if "%NATIVE%"=="1" (echo.^> Building %P% - %T% [native]) else echo.^> Building %P% - %T% [cross]
 if not "%NATIVE%"=="1" if "%INSTALL_TARGET%"=="1" (
   where rustup >nul 2>nul || (echo Error: --install-target requested but rustup was not found.& set /a FAILURES+=1 & exit /b 0)
   rustup target add "%T%"
@@ -138,17 +138,17 @@ if "%NATIVE%"=="1" (
 ) else (
   cargo build --workspace --release --target "%T%"
 )
-if errorlevel 1 (echo Error: build failed for %P% (%T%).& set /a FAILURES+=1 & exit /b 0)
+if errorlevel 1 (echo Error: build failed for %P% target %T%.& set /a FAILURES+=1 & exit /b 0)
 set "OUT=%TARGET_ROOT%\%T%\release"
 if "%NATIVE%"=="1" set "OUT=%TARGET_ROOT%\release"
 set "BIN=proxy-rs"
 if /i "%P%"=="windows" set "BIN=proxy-rs.exe"
-if not exist "%OUT%\%BIN%" (echo Error: build succeeded but binary is missing: %OUT%\%BIN%.& set /a FAILURES+=1 & exit /b 0)
+if not exist "%OUT%\%BIN%" (echo Error: build succeeded but output binary is missing.& set /a FAILURES+=1 & exit /b 0)
 echo Success: "%OUT%\%BIN%"
 exit /b 0
 
 :finished
 popd
-if not "%FAILURES%"=="0" (echo Build finished with %FAILURES% failure(s).& exit /b 1)
+if not "%FAILURES%"=="0" (echo Build finished with %FAILURES% failures.& exit /b 1)
 echo All requested builds succeeded.
 exit /b 0
