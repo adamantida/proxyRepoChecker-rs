@@ -156,15 +156,6 @@ Looking for a ready-to-use VPN for everyday browsing? Try **uSphere VPN**, a pai
 
 [Visit uSphere VPN on Telegram →](https://t.me/uSphereVPN_bot)
 
-## Contact and support
-
-- Telegram: `[add contact]`
-- Email: `[add email address]`
-- BTC: `[add wallet address]`
-- USDT: `[add wallet address and network]`
-
-Donations are voluntary and go toward supporting and developing `proxy-rs`. Using the project does not require payment.
-
 ## License
 
 This project is distributed under the [MIT License](LICENSE).

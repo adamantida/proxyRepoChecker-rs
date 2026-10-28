@@ -2351,6 +2351,13 @@ PY
         );
         assert!(!safe_outbound_shape(&vless).contains("01234567"));
 
+        let mut empty_fields = vless.clone();
+        empty_fields.stream = Some(serde_json::json!({"network": "", "security": ""}));
+        assert_eq!(
+            safe_outbound_shape(&empty_fields),
+            "vless: transport=unknown, security=unknown"
+        );
+
         let ss = parse::parse_link("ss://YWVzLTI1Ni1nY206c2VjcmV0@proxy.example:8388").unwrap();
         assert_eq!(safe_outbound_shape(&ss), "shadowsocks: method=aes-256-gcm");
         assert!(!safe_outbound_shape(&ss).contains("secret"));

@@ -156,15 +156,6 @@ GitHub Actions 会在 Ubuntu、macOS 和 Windows 上运行检查。另有 Ubuntu
 
 [前往 Telegram 了解 uSphere VPN →](https://t.me/uSphereVPN_bot)
 
-## 联系方式与项目支持
-
-- Telegram：`[填写联系方式]`
-- 邮箱：`[填写邮箱地址]`
-- BTC：`[填写钱包地址]`
-- USDT：`[填写钱包地址和网络]`
-
-捐赠完全自愿，用于支持和维护 `proxy-rs` 项目。使用本项目无需付费。
-
 ## 许可证
 
 本项目依据 [MIT 许可证](LICENSE) 发布。
