@@ -145,10 +145,12 @@ GitHub Actions 会在 Ubuntu、macOS 和 Windows 上运行检查。另有 Ubuntu
 
 ## 已发布结果
 
-- [Clash/mihomo 配置](https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/clash.yaml)
-- [高速代理列表](https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/good.txt)
+- [Clash/mihomo 配置 — 打开 RAW](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/clash.yaml)
+- [高速代理（`good.txt`）— 打开 RAW](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/good.txt)
+- [检查后的全部代理（`alive.txt`）— 打开 RAW](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/alive.txt)
+- [被拒绝的代理（`dead.txt`）— 打开 RAW](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/dead.txt)
 
-发布 workflow 每小时更新这些文件，也可在 GitHub Actions 中手动运行。
+发布 workflow 每小时的第 00 分钟（UTC）运行，也可在 GitHub Actions 中手动启动。成功完成后才会更新 `dist` 文件；如果运行失败，上一版本仍可使用。
 
 ## uSphere VPN
 

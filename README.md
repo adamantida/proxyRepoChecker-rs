@@ -145,10 +145,12 @@ Push тега вида `vX.Y.Z`, совпадающего с версией в `
 
 ## Опубликованные результаты
 
-- [Clash/mihomo конфигурация](https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/clash.yaml)
-- [Список быстрых прокси](https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/good.txt)
+- [Clash/mihomo конфигурация — открыть RAW](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/clash.yaml)
+- [Быстрые прокси (`good.txt`) — открыть RAW](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/good.txt)
+- [Все прокси после проверок (`alive.txt`) — открыть RAW](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/alive.txt)
+- [Отклонённые прокси (`dead.txt`) — открыть RAW](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/dead.txt)
 
-Файлы обновляет ежечасный workflow публикации; также его можно запустить вручную через GitHub Actions.
+Workflow публикации запускается каждый час в 00 минут UTC и может быть запущен вручную через GitHub Actions. Файлы в `dist` обновляются после успешного завершения прогона; если прогон завершится ошибкой, предыдущая версия останется доступна.
 
 ## uSphere VPN
 

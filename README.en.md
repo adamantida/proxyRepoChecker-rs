@@ -145,10 +145,12 @@ Pushing a `vX.Y.Z` tag that matches the version in `Cargo.toml` builds archives 
 
 ## Published results
 
-- [Clash/mihomo configuration](https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/clash.yaml)
-- [Fast proxy list](https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/good.txt)
+- [Clash/mihomo configuration — open RAW](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/clash.yaml)
+- [Fast proxies (`good.txt`) — open RAW](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/good.txt)
+- [All proxies after checks (`alive.txt`) — open RAW](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/alive.txt)
+- [Rejected proxies (`dead.txt`) — open RAW](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/dead.txt)
 
-The publishing workflow refreshes these files hourly and can also be run manually from GitHub Actions.
+The publishing workflow runs at the start of every hour (00:00 UTC) and can also be started manually from GitHub Actions. Files on `dist` are updated after a successful run; if a run fails, the previous versions remain available.
 
 ## uSphere VPN
 
