@@ -84,8 +84,7 @@ if "%ARCH%"=="" set "ARCH=%HOST_ARCH%"
 if /i not "%ARCH%"=="x86_64" if /i not "%ARCH%"=="aarch64" (echo Error: unsupported architecture. Choose x86_64 or aarch64.& exit /b 2)
 if /i not "%PLATFORM%"=="linux" if /i not "%PLATFORM%"=="macos" if /i not "%PLATFORM%"=="windows" if /i not "%PLATFORM%"=="all" (echo Error: unsupported platform.& exit /b 2)
 
-for %%I in ("%~dp0..") do set "ROOT=%%~fI"
-pushd "%ROOT%" >nul || (echo Error: cannot enter repository root.& exit /b 2)
+pushd "%~dp0.." >nul || (echo Error: cannot enter repository root.& exit /b 2)
 set "TARGET_ROOT=%CARGO_TARGET_DIR%"
 if not defined TARGET_ROOT set "TARGET_ROOT=target"
 for %%I in ("%TARGET_ROOT%") do set "TARGET_ROOT=%%~fI"
