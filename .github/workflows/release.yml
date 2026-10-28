@@ -34,6 +34,8 @@ jobs:
           python-version: "3.12"
       - name: Run workspace tests
         run: cargo test --workspace
+      - name: Test release packaging helpers
+        run: python -m unittest discover -s scripts -p 'test_*.py'
       - name: Build release binary
         run: cargo build --workspace --release
       - name: Package release archive

@@ -1,5 +1,13 @@
 # История изменений · Changelog · 更新日志
 
+## v0.1.1 — Исправление сборки Windows / Windows packaging fix / Windows 打包修复
+
+### 🛠 Исправления · Fixes · 修复
+
+- **RU:** Исправлено формирование Windows-архива: вывод Rust-инструментов теперь читается как UTF-8 независимо от системной кодовой страницы. Добавлен тест упаковщика в релизный CI.
+- **EN:** Fixed Windows archive packaging by decoding Rust tool output as UTF-8 regardless of the system code page. Added a packaging-helper test to release CI.
+- **中文：** 修复了 Windows 压缩包构建问题：Rust 工具输出现在始终按 UTF-8 解码，不受系统代码页影响。发布 CI 中新增了打包辅助脚本测试。
+
 ## v0.1.0 — Первый публичный выпуск / First public release / 首个公开版本
 
 Первый выпуск `proxy-rs` — кроссплатформенной Rust CLI для сбора, проверки и удобного экспорта прокси.

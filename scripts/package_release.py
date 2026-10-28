@@ -18,7 +18,11 @@ README_FILES = ("README.md", "README.en.md", "README.zh-CN.md")
 
 def rust_host() -> str:
     output = subprocess.run(
-        ["rustc", "-vV"], check=True, capture_output=True, text=True
+        ["rustc", "-vV"],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
     ).stdout
     for line in output.splitlines():
         if line.startswith("host: "):
@@ -32,6 +36,7 @@ def package_version() -> str:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         cwd=ROOT,
     ).stdout
     metadata = json.loads(output)
