@@ -12,6 +12,7 @@ jobs:
   package:
     name: Build ${{ matrix.platform }} archive
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -33,7 +34,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Run workspace tests
-        run: cargo test --workspace
+        run: cargo test --workspace -- --test-threads=1
       - name: Test release packaging helpers
         run: python -m unittest discover -s scripts -p 'test_*.py'
       - name: Build release binary

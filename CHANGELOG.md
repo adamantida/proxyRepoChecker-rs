@@ -1,5 +1,13 @@
 # История изменений · Changelog · 更新日志
 
+## v0.1.2 — Стабильный релизный CI / Stable release CI / 稳定发布 CI
+
+### 🛠 Исправления · Fixes · 修复
+
+- **RU:** Релизный CI запускает workspace-тесты последовательно, чтобы Unix-тесты с локальными сетевыми fixture не конфликтовали друг с другом. Для каждой платформенной сборки установлен предел времени в 30 минут.
+- **EN:** Release CI runs workspace tests sequentially so Unix tests using local network fixtures cannot interfere with each other. Each platform build now has a 30-minute timeout.
+- **中文：** 发布 CI 现在按顺序运行 workspace 测试，避免使用本地网络 fixture 的 Unix 测试互相干扰。每个平台构建任务均设置了 30 分钟超时。
+
 ## v0.1.1 — Исправление сборки Windows / Windows packaging fix / Windows 打包修复
 
 ### 🛠 Исправления · Fixes · 修复
