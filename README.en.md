@@ -6,7 +6,7 @@
 
 `proxy-rs` collects proxies from subscriptions, checks connectivity and speed, and helps prepare a Clash/mihomo configuration. It runs on Windows, macOS, and Linux.
 
-[![CI checks](https://img.shields.io/badge/CI-manual%20checks-blue?logo=githubactions&logoColor=white)](https://github.com/tnAnGel/proxyRepoChecker-rs/actions/workflows/cross-platform.yml)
+[![CI checks](https://img.shields.io/badge/CI-manual%20checks-blue?logo=githubactions&logoColor=white)](https://github.com/adamantida/proxyRepoChecker-rs/actions/workflows/cross-platform.yml)
 ![Rust 2021](https://img.shields.io/badge/Rust-2021-orange)
 ![Windows · macOS · Linux](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-64748b)
 
@@ -157,12 +157,12 @@ Open a RAW file to view it or copy its link into your app:
 
 | What you need | File |
 |---|---|
-| Ready-to-use Clash/mihomo config | [📥 clash.yaml](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/clash.yaml) |
-| Proxies that passed the speed check | [⚡ good.txt](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/good.txt) |
-| All proxies after enabled checks | [✅ alive.txt](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/alive.txt) |
-| Proxies rejected by checks | [🧾 dead.txt](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/dead.txt) |
+| Ready-to-use Clash/mihomo config | [📥 clash.yaml](https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/clash.yaml) |
+| Proxies that passed the speed check | [⚡ good.txt](https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/good.txt) |
+| All proxies after enabled checks | [✅ alive.txt](https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/alive.txt) |
+| Proxies rejected by checks | [🧾 dead.txt](https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/dead.txt) |
 
-Publishing runs every 30 minutes, at **:11 and :41 UTC**, and can also be started manually from [GitHub Actions](https://github.com/tnAnGel/proxyRepoChecker-rs/actions/workflows/proxy-collection.yml). New files appear after a successful check; if a run fails, the current links keep serving the previous results. GitHub may delay scheduled runs during periods of high load.
+Publishing runs every 60 minutes, and can also be started manually from [GitHub Actions](https://github.com/adamantida/proxyRepoChecker-rs/actions/workflows/proxy-collection.yml). New files appear after a successful check; if a run fails, the current links keep serving the previous results. GitHub may delay scheduled runs during periods of high load.
 
 ## 💬 uSphere VPN
 
