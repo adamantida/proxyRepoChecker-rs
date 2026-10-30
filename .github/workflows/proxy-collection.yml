@@ -2,8 +2,7 @@ name: proxy-collection
 
 on:
   schedule:
-    # Каждые 30 минут; сдвиг от границы часа уменьшает задержки планировщика.
-    - cron: "11,41 * * * *"
+    - cron: "0 */1 * * *"
   workflow_dispatch:
     inputs:
       set:
