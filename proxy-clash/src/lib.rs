@@ -16,7 +16,7 @@ use std::collections::HashSet;
 /// Один прокси на входе генератора.
 #[derive(Clone, Debug)]
 pub struct Source {
-    /// vless | vmess | trojan | shadowsocks
+    /// vless | vmess | trojan | shadowsocks | hysteria | hysteria2
     pub proto: String,
     /// Отображаемое имя (например `[DE] - 001`)
     pub name: String,
@@ -86,10 +86,16 @@ pub fn render(sources: &[Source], opt: &Options) -> Result<(String, Report)> {
             s.name.trim().to_string()
         };
         let mut name = base.clone();
-        let mut i = 2;
-        while !used.insert(name.clone()) {
-            name = format!("{base} #{i}");
-            i += 1;
+        if !used.insert(name.clone()) {
+            // Есть не более sources.len() уже занятых имён, поэтому среди
+            // sources.len() + 1 суффиксов гарантированно найдётся свободный.
+            for suffix in 2..=sources.len().saturating_add(2) {
+                let candidate = format!("{base} #{suffix}");
+                if used.insert(candidate.clone()) {
+                    name = candidate;
+                    break;
+                }
+            }
         }
         put(&mut m, "name", str_val(&name));
 
@@ -105,17 +111,9 @@ pub fn render(sources: &[Source], opt: &Options) -> Result<(String, Report)> {
 
     let mut root = Mapping::new();
     rules::insert_globals(&mut root);
-    put(
-        &mut root,
-        "proxy-groups",
-        Yaml::Sequence(group_list),
-    );
+    put(&mut root, "proxy-groups", Yaml::Sequence(group_list));
     put(&mut root, "proxies", Yaml::Sequence(proxies));
-    put(
-        &mut root,
-        "rules",
-        rules::rules(opt.include_categories),
-    );
+    put(&mut root, "rules", rules::rules(opt.include_categories));
 
     let body = serde_yaml_ng::to_string(&Yaml::Mapping(root))?;
     let header = format!(
@@ -191,8 +189,20 @@ mod tests {
     fn renders_valid_yaml_with_groups() {
         let src = vec![
             vless("[DE] - 001", "DE", "raw", "reality", json!({})),
-            vless("[DE] - 002", "DE", "ws", "tls", json!({ "wsSettings": { "path": "/x", "host": "h.example" } })),
-            vless("[RU] - 001", "RU", "grpc", "tls", json!({ "grpcSettings": { "serviceName": "svc" } })),
+            vless(
+                "[DE] - 002",
+                "DE",
+                "ws",
+                "tls",
+                json!({ "wsSettings": { "path": "/x", "host": "h.example" } }),
+            ),
+            vless(
+                "[RU] - 001",
+                "RU",
+                "grpc",
+                "tls",
+                json!({ "grpcSettings": { "serviceName": "svc" } }),
+            ),
         ];
         let (yaml, rep) = render(&src, &Options::default()).unwrap();
         assert_eq!(rep.proxies, 3);
@@ -220,9 +230,101 @@ mod tests {
     }
 
     #[test]
+    fn renders_hysteria_v1_and_v2_proxy_entries() {
+        let mut v1 = vless("hy1", "DE", "raw", "none", json!({}));
+        v1.proto = "hysteria".into();
+        v1.settings = json!({
+            "auth": "legacy-auth",
+            "obfs": "legacy-obfs",
+            "upMbps": 12,
+            "downMbps": 45,
+            "sni": "hy1.example"
+        });
+
+        let mut v2 = vless("hy2", "NL", "raw", "none", json!({}));
+        v2.proto = "hysteria2".into();
+        v2.settings = json!({
+            "password": "hy2-password",
+            "obfs": "salamander",
+            "obfsPassword": "hy2-obfs",
+            "ports": "443-8443",
+            "hopInterval": 30,
+            "tls": { "serverName": "hy2.example", "insecure": true }
+        });
+
+        let (yaml, report) = render(&[v1, v2], &Options::default()).unwrap();
+        let root: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).unwrap();
+        let proxies = root.get("proxies").unwrap().as_sequence().unwrap();
+        assert_eq!(report.proxies, 2);
+        assert_eq!(report.skipped, 0);
+        assert_eq!(
+            proxies[0]
+                .get("type")
+                .and_then(serde_yaml_ng::Value::as_str),
+            Some("hysteria")
+        );
+        assert_eq!(
+            proxies[0]
+                .get("auth-str")
+                .and_then(serde_yaml_ng::Value::as_str),
+            Some("legacy-auth")
+        );
+        assert_eq!(
+            proxies[0]
+                .get("protocol")
+                .and_then(serde_yaml_ng::Value::as_str),
+            Some("udp")
+        );
+        assert_eq!(
+            proxies[0].get("up").and_then(serde_yaml_ng::Value::as_str),
+            Some("12")
+        );
+        assert_eq!(
+            proxies[1]
+                .get("type")
+                .and_then(serde_yaml_ng::Value::as_str),
+            Some("hysteria2")
+        );
+        assert_eq!(
+            proxies[1]
+                .get("password")
+                .and_then(serde_yaml_ng::Value::as_str),
+            Some("hy2-password")
+        );
+        assert_eq!(
+            proxies[1]
+                .get("obfs-password")
+                .and_then(serde_yaml_ng::Value::as_str),
+            Some("hy2-obfs")
+        );
+        assert_eq!(
+            proxies[1]
+                .get("ports")
+                .and_then(serde_yaml_ng::Value::as_str),
+            Some("443-8443")
+        );
+        assert_eq!(
+            proxies[1]
+                .get("hop-interval")
+                .and_then(serde_yaml_ng::Value::as_u64),
+            Some(30)
+        );
+        assert_eq!(
+            proxies[1].get("sni").and_then(serde_yaml_ng::Value::as_str),
+            Some("hy2.example")
+        );
+        assert_eq!(
+            proxies[1]
+                .get("skip-cert-verify")
+                .and_then(serde_yaml_ng::Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
     fn skips_unknown_proto() {
         let mut s = vless("[XX] - 001", "XX", "raw", "none", json!({}));
-        s.proto = "hysteria2".into();
+        s.proto = "unknown".into();
         let (_, rep) = render(&[s], &Options::default()).unwrap();
         assert_eq!(rep.proxies, 0);
         assert_eq!(rep.skipped, 1);
@@ -251,5 +353,212 @@ mod tests {
         assert_eq!(rep.countries, 0);
         assert_eq!(rep.groups, 6);
         assert!(!yaml.contains("Telegram"));
+    }
+
+    #[test]
+    fn empty_and_unsupported_inputs_still_render_parseable_yaml() {
+        let mut unsupported = vless("unknown", "XX", "raw", "none", json!({}));
+        unsupported.proto = "unknown".into();
+        for sources in [Vec::new(), vec![unsupported]] {
+            let (yaml, report) = render(&sources, &Options::default()).unwrap();
+            let root: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).unwrap();
+            assert!(root
+                .get("proxies")
+                .unwrap()
+                .as_sequence()
+                .unwrap()
+                .is_empty());
+            assert!(root.get("proxy-groups").unwrap().as_sequence().is_some());
+            assert!(root.get("rules").unwrap().as_sequence().is_some());
+            assert_eq!(report.proxies, 0);
+            assert_eq!(report.skipped, sources.len());
+        }
+    }
+
+    #[test]
+    fn trims_names_and_resolves_collisions_deterministically() {
+        let a = vless("  same  ", "DE", "raw", "none", json!({}));
+        let b = vless("same", "DE", "raw", "none", json!({}));
+        let c = vless("", "XX", "raw", "none", json!({}));
+        let d = vless("same", "DE", "raw", "none", json!({}));
+        let (yaml, report) = render(&[a, b, c, d], &Options::default()).unwrap();
+        let root: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).unwrap();
+        let names: Vec<&str> = root
+            .get("proxies")
+            .unwrap()
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .map(|proxy| proxy.get("name").unwrap().as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["same", "same #2", "1.2.3.4:443", "same #3"]);
+        assert_eq!(report.proxies, 4);
+        assert_eq!(report.skipped, 0);
+    }
+
+    #[test]
+    fn non_object_stream_extras_are_ignored() {
+        let source = vless("proxy", "DE", "raw", "none", json!(null));
+        let (yaml, report) = render(&[source], &Options::default()).unwrap();
+
+        assert_eq!(report.proxies, 1);
+        assert!(yaml.contains("name: proxy"));
+    }
+
+    #[test]
+    fn render_report_matches_serialized_sections() {
+        let sources = vec![
+            vless("one", "DE", "raw", "none", json!({})),
+            vless("two", "RU-BLOCKED", "raw", "none", json!({})),
+        ];
+        let (yaml, report) = render(&sources, &Options::default()).unwrap();
+        let root: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert_eq!(
+            root.get("proxies").unwrap().as_sequence().unwrap().len(),
+            report.proxies
+        );
+        assert_eq!(
+            root.get("proxy-groups")
+                .unwrap()
+                .as_sequence()
+                .unwrap()
+                .len(),
+            report.groups
+        );
+        assert_eq!(report.countries, 2);
+        assert!(yaml.starts_with("# Сгенерировано proxy-rs (proxy-clash)\n"));
+    }
+
+    #[test]
+    fn renders_all_requested_protocol_families_with_their_credentials_and_transports() {
+        let mut vless_source = vless(
+            "vless",
+            "DE",
+            "grpc",
+            "tls",
+            json!({"grpcSettings":{"serviceName":"vless-service"}}),
+        );
+        vless_source.settings["flow"] = json!("xtls-rprx-vision");
+
+        let mut vmess = vless(
+            "vmess",
+            "NL",
+            "ws",
+            "tls",
+            json!({
+                "wsSettings":{"path":"/vmess", "host":"vmess.example"}
+            }),
+        );
+        vmess.proto = "vmess".into();
+        vmess.settings = json!({"id":"vmess-id", "security":"aes-128-gcm"});
+
+        let mut ss = vless("ss", "JP", "raw", "none", json!({}));
+        ss.proto = "shadowsocks".into();
+        ss.settings = json!({"method":"chacha20-poly1305", "password":"ss-password"});
+
+        let mut trojan = vless(
+            "trojan",
+            "GB",
+            "grpc",
+            "tls",
+            json!({
+                "grpcSettings":{"serviceName":"trojan-service"}
+            }),
+        );
+        trojan.proto = "trojan".into();
+        trojan.settings = json!({"password":"trojan-password"});
+
+        let mut hysteria1 = vless("hysteria1", "FR", "raw", "none", json!({}));
+        hysteria1.proto = "hysteria1".into();
+        hysteria1.settings = json!({"auth":"hy1-auth", "upMbps":12, "downMbps":40});
+
+        let mut hysteria2 = vless("hysteria2", "SE", "raw", "none", json!({}));
+        hysteria2.proto = "hysteria2".into();
+        hysteria2.settings =
+            json!({"password":"hy2-password", "obfs":"salamander", "obfsPassword":"hy2-obfs"});
+
+        let (yaml, report) = render(
+            &[vless_source, vmess, ss, trojan, hysteria1, hysteria2],
+            &Options::default(),
+        )
+        .unwrap();
+        let root: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml).unwrap();
+        let proxies = root.get("proxies").unwrap().as_sequence().unwrap();
+
+        assert_eq!(report.proxies, 6);
+        assert_eq!(report.skipped, 0);
+        assert_eq!(
+            proxies
+                .iter()
+                .map(|proxy| proxy.get("type").unwrap().as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["vless", "vmess", "ss", "trojan", "hysteria", "hysteria2"]
+        );
+        assert_eq!(
+            proxies[0]
+                .get("flow")
+                .and_then(serde_yaml_ng::Value::as_str),
+            Some("xtls-rprx-vision")
+        );
+        assert_eq!(
+            proxies[0]
+                .get("grpc-opts")
+                .and_then(|v| v.get("grpc-service-name"))
+                .and_then(serde_yaml_ng::Value::as_str),
+            Some("vless-service")
+        );
+        assert_eq!(
+            proxies[1]
+                .get("uuid")
+                .and_then(serde_yaml_ng::Value::as_str),
+            Some("vmess-id")
+        );
+        assert_eq!(
+            proxies[1]
+                .get("ws-opts")
+                .and_then(|v| v.get("path"))
+                .and_then(serde_yaml_ng::Value::as_str),
+            Some("/vmess")
+        );
+        assert_eq!(
+            proxies[2]
+                .get("cipher")
+                .and_then(serde_yaml_ng::Value::as_str),
+            Some("chacha20-ietf-poly1305")
+        );
+        assert_eq!(
+            proxies[2]
+                .get("password")
+                .and_then(serde_yaml_ng::Value::as_str),
+            Some("ss-password")
+        );
+        assert_eq!(
+            proxies[3]
+                .get("password")
+                .and_then(serde_yaml_ng::Value::as_str),
+            Some("trojan-password")
+        );
+        assert_eq!(
+            proxies[3].get("sni").and_then(serde_yaml_ng::Value::as_str),
+            Some("sni.example")
+        );
+        assert_eq!(
+            proxies[4]
+                .get("auth-str")
+                .and_then(serde_yaml_ng::Value::as_str),
+            Some("hy1-auth")
+        );
+        assert_eq!(
+            proxies[5]
+                .get("password")
+                .and_then(serde_yaml_ng::Value::as_str),
+            Some("hy2-password")
+        );
+        assert_eq!(
+            proxies[5]
+                .get("obfs-password")
+                .and_then(serde_yaml_ng::Value::as_str),
+            Some("hy2-obfs")
+        );
     }
 }

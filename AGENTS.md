@@ -1,14 +1,16 @@
 # AGENTS.md
 
 ## Проект
-`proxy-rs` — Rust CLI (Windows): парсинг прокси из агрегаторов → GeoIP-переименование
+`proxy-rs` — кроссплатформенный Rust CLI (Windows/macOS/Linux): парсинг прокси из агрегаторов → GeoIP-переименование
 (`[XX] - NNN`) → TCP ping (префильтр) → замер скорости через xray → выгрузка файлов.
-Генерация Clash/mihomo конфига вынесена в отдельный crate `proxy-clash` (workspace-member).
+Генерация Clash/mihomo и sing-box конфигов вынесена в отдельные workspace crates
+`proxy-clash` и `proxy-singbox`.
 
 ## Команды
-- Сборка: `cargo build --release` (бинарник `target/release/proxy-rs.exe`)
+- Сборка: `cargo build --workspace --release` (бинарник `target/release/proxy-rs` или `proxy-rs.exe` на Windows).
+- Скрипты выбора цели: `scripts/build.sh` (Bash, macOS/Linux) и `scripts/build.bat` (Windows CMD); оба принимают платформу, архитектуру или `all`.
 - Все сборки должны давать **0 warnings**
-- Тесты генератора: `cargo test -p proxy-clash`
+- Все тесты workspace: `cargo test --workspace`; точечно генератор Clash: `cargo test -p proxy-clash`.
 - Помощь: `proxy-rs --help`
 
 ## Правило тестирования
@@ -17,11 +19,13 @@
 - `--set 3` даёт ~10k ссылок / ~200 после `-n`; `--shuffle` резко повышает шанс живых.
 
 ## Workspace
-- Корневой `Cargo.toml` — и `[workspace]` (members = `["proxy-clash"]`, `resolver = "2"`),
+- Корневой `Cargo.toml` — и `[workspace]` (members = `["proxy-clash", "proxy-singbox"]`, `resolver = "2"`),
   и `[package] proxy-rs`. `build.rs` копирует `bin/sources.json` в профиль сборки.
 - `proxy-clash/` — чистая библиотека (`proxy_clash`): `Source` (proto/name/server/port/
   country + xray `settings`/`stream` как `serde_json::Value`) → `render()` → YAML + `Report`.
   Никакого I/O; зависимость `serde_yaml_ng` живёт только здесь.
+- `proxy-singbox/` — чистая библиотека преобразования Xray-derived proxy data в sing-box JSON
+  и отчёт о поддержанных/пропущенных узлах; сетевого и файлового I/O нет.
 
 ## Clash-генерация
 - Флаги (`src/cli.rs`, раздел «Вывод»): `--clash [FILE]` (без значения = `clash.yaml`),
@@ -44,6 +48,8 @@
   Страны `🇽🇽 XX`(url-test), `🌐 Прочие` (XX/неопределённые).
   Псевдо-страны из geoip.dat (типа `CLOUDFLARE` → `☁️`, `RU-BLOCKED` → `🔒`, прочие теги → `🏳️`)
   получают собственные группы наравне со странами.
+- sing-box (`src/cli.rs`: `--singbox [FILE]`) также строится из `good`; crate `proxy-singbox`
+  записывает JSON и отчёт о преобразованных/пропущенных узлах (`--singbox-report`).
 - Правила и глобальные секции (dns/sniffer/profile/…) — `proxy-clash/src/rules.rs`.
   `PROCESS-NAME`-правил нет; `GEOSITE,CATEGORY-BANK-RU`/`category-ru`/`GEOIP,RU` идут в `🟢 Напрямую`.
 

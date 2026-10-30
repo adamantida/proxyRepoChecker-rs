@@ -1,26 +1,62 @@
-# Rust
-/target
-debug
+# Rust build output (Cargo.lock is intentionally tracked for this CLI app).
+/target/
+**/target/
+/debug/
+/release/
 **/*.rs.bk
 *.pdb
 rustc-ice-*.txt
 
-# Runtime / generated
-.proxy_runtime/
-out/
+# Runtime files and generated results.
+/.proxy_runtime/
+/.proxy_cache/
+*.checkpoint
+*.checkpoint.json
+/out/
+/release-assets/
+/raw.txt
+/parsed.txt
+/alive.txt
+/good.txt
+/dead.txt
+/clash.yaml
+/xray
+/xray.exe
+/geoip.dat
+/proxy-rs
+/proxy-rs.exe
+
+# Logs can contain local usernames, machine names, and filesystem paths.
+*.log
+*.log.*
+*.log-*
+/out/diagnostics/
+
+# Temporary files from atomic writes, editors, and mutation testing.
 *.tmp
+*.tmp.*
+.*.tmp
+.*.tmp.*
+/mutants.out/
+/mutants.out.old/
+__pycache__/
+*.py[cod]
 
-# Downloaded / local artifacts
-xray
-xray.exe
-geoip.dat
-raw.txt
-parsed.txt
-alive.txt
-good.txt
-dead.txt
-clash.yaml
+# Operating system files.
+.DS_Store
+._*
+Thumbs.db
+Desktop.ini
 
-# IDE
+# Editors and IDEs.
 .idea/
 .vscode/
+.fleet/
+*.swp
+*.swo
+*~
+
+# Crash dumps.
+/core
+/core.*
+*.dmp

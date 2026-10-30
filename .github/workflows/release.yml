@@ -1,0 +1,92 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build ${{ matrix.platform }} archive
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            binary: target/release/proxy-rs
+          - os: macos-latest
+            platform: macos
+            binary: target/release/proxy-rs
+          - os: windows-latest
+            platform: windows
+            binary: target/release/proxy-rs.exe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run workspace tests
+        run: cargo test --workspace -- --test-threads=1
+      - name: Test release packaging helpers
+        run: python -m unittest discover -s scripts -p 'test_*.py'
+      - name: Build release binary
+        run: cargo build --workspace --release
+      - name: Package release archive
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: >-
+          python scripts/package_release.py
+          --tag "$RELEASE_TAG"
+          --platform "${{ matrix.platform }}"
+          --binary "${{ matrix.binary }}"
+          --output release-assets
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 7
+
+  draft-release:
+    name: Assemble draft GitHub Release
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Prepare localized release notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: >-
+          python scripts/extract_release_notes.py
+          --tag "$RELEASE_TAG"
+          --output release-notes.md
+      - name: Create checksums
+        run: |
+          cd release-assets
+          sha256sum * > SHA256SUMS
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          body_path: release-notes.md
+          files: release-assets/*
+          fail_on_unmatched_files: true

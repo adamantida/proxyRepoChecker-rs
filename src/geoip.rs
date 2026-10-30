@@ -1,5 +1,6 @@
 use crate::parse::Proxy;
 use anyhow::{bail, Context, Result};
+use colored::Colorize;
 use futures::stream::{self, StreamExt};
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -47,7 +48,7 @@ fn mask_u32(prefix: u32) -> (u32, u32) {
     if prefix == 0 {
         (0, u32::MAX)
     } else if prefix >= 32 {
-        (u32::MAX, u32::MAX)
+        (u32::MAX, 0)
     } else {
         let m = u32::MAX << (32 - prefix);
         (m, !m)
@@ -58,9 +59,9 @@ fn mask_u128(prefix: u32) -> (u128, u128) {
     if prefix == 0 {
         (0, u128::MAX)
     } else if prefix >= 128 {
-        (u128::MAX, u128::MAX)
+        (u128::MAX, 0)
     } else {
-        let m = u128::MAX << (128 - prefix as u32);
+        let m = u128::MAX << (128 - prefix);
         (m, !m)
     }
 }
@@ -75,7 +76,7 @@ fn parse_cidr(cidr: &[u8]) -> Option<(&[u8], u32)> {
         match (field, key & 7) {
             (1, 2) => {
                 let len = read_varint(cidr, &mut pos)? as usize;
-                if pos + len > cidr.len() {
+                if len > cidr.len().saturating_sub(pos) {
                     return None;
                 }
                 ip = Some(&cidr[pos..pos + len]);
@@ -89,7 +90,7 @@ fn parse_cidr(cidr: &[u8]) -> Option<(&[u8], u32)> {
             }
             (_, 2) => {
                 let len = read_varint(cidr, &mut pos)? as usize;
-                if pos + len > cidr.len() {
+                if len > cidr.len().saturating_sub(pos) {
                     return None;
                 }
                 pos += len;
@@ -119,7 +120,7 @@ impl GeoDb {
                 bail!("geoip.dat: неожиданный protobuf-ключ {key}");
             }
             let len = read_varint(bytes, &mut pos).context("geoip.dat: битый varint")? as usize;
-            if pos + len > bytes.len() {
+            if len > bytes.len().saturating_sub(pos) {
                 bail!("geoip.dat: запись выходит за границу файла");
             }
             let payload = &bytes[pos..pos + len];
@@ -133,16 +134,19 @@ impl GeoDb {
                 let ifield = ikey >> 3;
                 match (ifield, ikey & 7) {
                     (1, 2) => {
-                        let ilen = read_varint(payload, &mut cpos).context("geoip.dat: country_code")? as usize;
-                        if cpos + ilen > payload.len() {
+                        let ilen = read_varint(payload, &mut cpos)
+                            .context("geoip.dat: country_code")?
+                            as usize;
+                        if ilen > payload.len().saturating_sub(cpos) {
                             bail!("geoip.dat: country_code за границей");
                         }
                         country = String::from_utf8_lossy(&payload[cpos..cpos + ilen]).into_owned();
                         cpos += ilen;
                     }
                     (2, 2) => {
-                        let ilen = read_varint(payload, &mut cpos).context("geoip.dat: cidr")? as usize;
-                        if cpos + ilen > payload.len() {
+                        let ilen =
+                            read_varint(payload, &mut cpos).context("geoip.dat: cidr")? as usize;
+                        if ilen > payload.len().saturating_sub(cpos) {
                             bail!("geoip.dat: cidr за границей");
                         }
                         let cidr = &payload[cpos..cpos + ilen];
@@ -179,8 +183,9 @@ impl GeoDb {
                         }
                     }
                     (_, 2) => {
-                        let ilen = read_varint(payload, &mut cpos).context("geoip.dat: skip")? as usize;
-                        if cpos + ilen > payload.len() {
+                        let ilen =
+                            read_varint(payload, &mut cpos).context("geoip.dat: skip")? as usize;
+                        if ilen > payload.len().saturating_sub(cpos) {
                             bail!("geoip.dat: skip за границей");
                         }
                         cpos += ilen;
@@ -243,15 +248,20 @@ pub async fn ensure_db(path: &Path, url: &str) -> Result<()> {
             }
         }
     }
-    println!(">> GeoIP: качаю geoip.dat -> {}", path.display());
+    println!(
+        "  {} {} → {}",
+        "↓".cyan().bold(),
+        "Загружаю базу GeoIP".cyan(),
+        path.display().to_string().white()
+    );
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).ok();
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("не удалось создать каталог {}", parent.display()))?;
         }
     }
     let client = reqwest::Client::builder()
         .user_agent(UA)
-        .danger_accept_invalid_certs(true)
         .build()
         .context("reqwest client")?;
     let resp = client
@@ -270,11 +280,7 @@ pub async fn ensure_db(path: &Path, url: &str) -> Result<()> {
         );
     }
     GeoDb::parse(&bytes).context("скачанный файл не является валидным geoip.dat")?;
-    let tmp = path.with_extension("dat.tmp");
-    std::fs::write(&tmp, &bytes)
-        .with_context(|| format!("не удалось записать {}", tmp.display()))?;
-    std::fs::rename(&tmp, path)
-        .with_context(|| format!("не удалось заменить {}", path.display()))?;
+    crate::output::write_bytes_atomic(path, &bytes, None)?;
     Ok(())
 }
 
@@ -310,10 +316,7 @@ async fn resolve_host(host: String) -> (String, Option<IpAddr>) {
 }
 
 /// Определяет страну для каждого прокси и переименовывает в [XX] - NNN.
-pub async fn assign_countries(
-    proxies: &mut [Proxy],
-    db: &GeoDb,
-) -> Result<HashMap<String, usize>> {
+pub async fn assign_countries(proxies: &mut [Proxy], db: &GeoDb) -> Result<HashMap<String, usize>> {
     let hosts: Vec<String> = {
         let mut set: std::collections::HashSet<String> = std::collections::HashSet::new();
         for p in proxies.iter() {
@@ -328,7 +331,7 @@ pub async fn assign_countries(
         indicatif::ProgressStyle::with_template(
             "{spinner:.green} GeoIP резолв {pos}/{len} хостов [{elapsed_precise}<{eta_precise}]",
         )
-        .unwrap_or_else(|_| indicatif::ProgressStyle::default_bar()),
+        .expect("built-in GeoIP progress template is valid"),
     );
     let resolved: HashMap<String, Option<IpAddr>> = stream::iter(hosts)
         .map(|host| {
@@ -368,8 +371,14 @@ pub async fn assign_countries(
 }
 
 pub fn print_country_summary(counts: &HashMap<String, usize>) {
+    if let Some(line) = country_summary_line(counts) {
+        println!("  {}", line.cyan());
+    }
+}
+
+fn country_summary_line(counts: &HashMap<String, usize>) -> Option<String> {
     if counts.is_empty() {
-        return;
+        return None;
     }
     let mut list: Vec<(&String, &usize)> = counts.iter().collect();
     list.sort_by(|a, b| b.1.cmp(a.1));
@@ -378,5 +387,639 @@ pub fn print_country_summary(counts: &HashMap<String, usize>) {
         .take(12)
         .map(|(k, v)| format!("{k}: {v}"))
         .collect();
-    println!(">> GeoIP: стран: {}, топ: {}", counts.len(), shown.join(", "));
+    Some(format!(
+        "Стран в результатах: {}, распределение: {}",
+        counts.len(),
+        shown.join(", ")
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse::Proxy;
+    use serde_json::json;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    fn varint(mut value: u64) -> Vec<u8> {
+        let mut out = Vec::new();
+        while value >= 0x80 {
+            out.push((value as u8 & 0x7f) | 0x80);
+            value >>= 7;
+        }
+        out.push(value as u8);
+        out
+    }
+
+    fn field_bytes(field: u64, value: &[u8]) -> Vec<u8> {
+        let mut out = varint((field << 3) | 2);
+        out.extend(varint(value.len() as u64));
+        out.extend(value);
+        out
+    }
+
+    fn field_varint(field: u64, value: u64) -> Vec<u8> {
+        let mut out = varint(field << 3);
+        out.extend(varint(value));
+        out
+    }
+
+    fn cidr(ip: &[u8], prefix: u32) -> Vec<u8> {
+        let mut out = field_bytes(1, ip);
+        out.extend(field_varint(2, prefix as u64));
+        out
+    }
+
+    fn entry(country: &str, blocks: &[(&[u8], u32)]) -> Vec<u8> {
+        let mut payload = field_bytes(1, country.as_bytes());
+        for (ip, prefix) in blocks {
+            payload.extend(field_bytes(2, &cidr(ip, *prefix)));
+        }
+        field_bytes(1, &payload)
+    }
+
+    // GeoDb::parse rejects tiny databases, so pad fixtures with valid empty entries.
+    fn database(first_entries: &[Vec<u8>]) -> Vec<u8> {
+        let mut bytes = first_entries.concat();
+        for _ in first_entries.len()..10 {
+            bytes.extend(field_bytes(1, &[]));
+        }
+        bytes
+    }
+
+    fn padded_database() -> Vec<u8> {
+        let mut payload = field_bytes(1, b"US");
+        payload.extend(field_bytes(2, &cidr(&[8, 8, 8, 8], 32)));
+        payload.extend(field_bytes(9, &vec![0; 1100]));
+        database(&[field_bytes(1, &payload)])
+    }
+
+    fn temp_path(label: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        std::env::temp_dir().join(format!(
+            "proxy-rs-geoip-{}-{}-{label}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    async fn serve_once(
+        status: &'static str,
+        body: Vec<u8>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 2048];
+            let _ = stream.read(&mut request).await.unwrap();
+            let headers = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(headers.as_bytes()).await.unwrap();
+            stream.write_all(&body).await.unwrap();
+        });
+        (format!("http://{address}/geoip.dat"), task)
+    }
+
+    fn proxy(host: &str) -> Proxy {
+        Proxy {
+            proto: "vless",
+            host: host.into(),
+            port: 443,
+            name: String::new(),
+            base_url: String::new(),
+            orig_url: String::new(),
+            settings: json!({}),
+            stream: None,
+            country: String::new(),
+            display: String::new(),
+            ping: None,
+            speed_kbs: 0.0,
+        }
+    }
+
+    #[test]
+    fn read_varint_decodes_boundaries_and_advances_position() {
+        for value in [0, 1, 127, 128, 300, u32::MAX as u64, u64::MAX] {
+            let bytes = varint(value);
+            let mut pos = 0;
+            assert_eq!(read_varint(&bytes, &mut pos), Some(value));
+            assert_eq!(pos, bytes.len());
+        }
+    }
+
+    #[test]
+    fn read_varint_rejects_truncated_and_overlong_values() {
+        let mut pos = 0;
+        assert_eq!(read_varint(&[], &mut pos), None);
+        assert_eq!(read_varint(&[0x80], &mut pos), None);
+
+        let mut pos = 0;
+        assert_eq!(read_varint(&[0x80; 10], &mut pos), None);
+    }
+
+    #[test]
+    fn cidr_masks_cover_zero_full_and_partial_prefixes() {
+        assert_eq!(mask_u32(0), (0, u32::MAX));
+        assert_eq!(mask_u32(32), (u32::MAX, 0));
+        assert_eq!(mask_u32(24), (0xffff_ff00, 0xff));
+        assert_eq!(mask_u128(0), (0, u128::MAX));
+        assert_eq!(mask_u128(128), (u128::MAX, 0));
+        assert_eq!(mask_u128(120), (u128::MAX << 8, 0xff));
+    }
+
+    #[test]
+    fn parse_cidr_reads_fields_in_any_order_and_skips_unknown_fields() {
+        let mut bytes = field_varint(2, 24);
+        bytes.extend(field_bytes(9, b"ignored"));
+        bytes.extend(field_bytes(1, &[192, 0, 2, 7]));
+        assert_eq!(parse_cidr(&bytes), Some((&[192, 0, 2, 7][..], 24)));
+    }
+
+    #[test]
+    fn parse_cidr_rejects_missing_ip_bad_wire_and_truncated_fields() {
+        assert_eq!(parse_cidr(&field_varint(2, 24)), None);
+        assert_eq!(parse_cidr(&[0x0b]), None); // field 1, unsupported group wire type
+        assert_eq!(parse_cidr(&[0x0d]), None); // field 1, unsupported fixed-width wire type
+        assert_eq!(parse_cidr(&[0x80]), None); // truncated field key
+        assert_eq!(parse_cidr(&[0x0a, 0x80]), None); // truncated IP length
+        assert_eq!(parse_cidr(&[0x0a, 0x04, 0x01]), None); // truncated IP payload
+        assert_eq!(parse_cidr(&[0x10, 0x80]), None); // truncated prefix varint
+        assert_eq!(parse_cidr(&[0x1a, 0x00]), None); // unknown field with unsupported wire type
+        assert_eq!(parse_cidr(&[0x4a, 0x02, 0x01]), None); // truncated unknown bytes field
+        assert_eq!(parse_cidr(&[0x48, 0x80]), None); // truncated unknown varint field
+    }
+
+    #[test]
+    fn parse_skips_unknown_fields_and_reuses_country_indices() {
+        let mut first = entry("US", &[(&[8, 8, 8, 0], 24)]);
+        let mut payload = field_bytes(1, b"US");
+        payload.extend(field_bytes(2, &cidr(&[1, 1, 1, 1], 32)));
+        payload.extend(field_bytes(7, b"metadata"));
+        payload.extend(field_varint(8, 123));
+        first.extend(field_bytes(1, &payload));
+
+        let db = GeoDb::parse(&database(&[first])).unwrap();
+
+        assert_eq!(db.stats(), (1, 2, 0));
+        assert_eq!(db.iso_for("8.8.8.8".parse().unwrap()), Some("US"));
+        assert_eq!(db.iso_for("1.1.1.1".parse().unwrap()), Some("US"));
+    }
+
+    #[test]
+    fn parse_reports_truncated_top_level_key_after_valid_entries() {
+        let mut bytes = database(&[entry("US", &[(&[8, 8, 8, 8], 32)])]);
+        bytes.truncate(entry("US", &[(&[8, 8, 8, 8], 32)]).len());
+        for _ in 1..9 {
+            bytes.extend(field_bytes(1, &[]));
+        }
+        bytes.push(0x80);
+
+        let error = GeoDb::parse(&bytes).err().unwrap().to_string();
+        assert!(error.contains("записей: 9"), "{error}");
+    }
+
+    #[test]
+    fn open_reads_and_parses_a_database_and_adds_path_context_on_errors() {
+        let path = temp_path("open");
+        std::fs::write(&path, database(&[entry("US", &[(&[8, 8, 8, 8], 32)])])).unwrap();
+        assert_eq!(GeoDb::open(&path).unwrap().stats(), (1, 1, 0));
+        std::fs::write(&path, b"invalid").unwrap();
+        let error = GeoDb::open(&path).err().unwrap().to_string();
+        assert!(error.contains(&path.display().to_string()), "{error}");
+        std::fs::remove_file(&path).unwrap();
+
+        let missing = temp_path("missing");
+        let error = GeoDb::open(&missing).err().unwrap().to_string();
+        assert!(error.contains(&missing.display().to_string()), "{error}");
+    }
+
+    #[tokio::test]
+    async fn ensure_db_uses_valid_cache_without_network() {
+        let path = temp_path("cache");
+        std::fs::write(&path, padded_database()).unwrap();
+
+        ensure_db(&path, "http://127.0.0.1:1/unreachable")
+            .await
+            .unwrap();
+
+        assert_eq!(GeoDb::open(&path).unwrap().stats(), (1, 1, 0));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn ensure_db_replaces_invalid_cache_with_a_valid_local_download() {
+        let path = temp_path("invalid-cache");
+        std::fs::write(&path, b"stale invalid cache").unwrap();
+        let (url, server) = serve_once("200 OK", padded_database()).await;
+
+        ensure_db(&path, &url).await.unwrap();
+
+        assert_eq!(GeoDb::open(&path).unwrap().stats(), (1, 1, 0));
+        server.await.unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn ensure_db_downloads_valid_database_and_reuses_it() {
+        let path = temp_path("download");
+        let (url, server) = serve_once("200 OK", padded_database()).await;
+
+        ensure_db(&path, &url).await.unwrap();
+        ensure_db(&path, "http://127.0.0.1:1/unreachable")
+            .await
+            .unwrap();
+
+        assert_eq!(GeoDb::open(&path).unwrap().stats(), (1, 1, 0));
+        server.await.unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn ensure_db_rejects_a_self_signed_tls_certificate() {
+        use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
+        use tokio_rustls::TlsAcceptor;
+
+        let generated = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let key =
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(generated.key_pair.serialize_der()));
+        let config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![generated.cert.der().clone()], key)
+            .unwrap();
+        let acceptor = TlsAcceptor::from(std::sync::Arc::new(config));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            assert!(
+                acceptor.accept(stream).await.is_err(),
+                "the server should observe the client's rejection of its certificate"
+            );
+        });
+        let path = temp_path("untrusted-tls");
+        let url = format!("https://localhost:{}/geoip.dat", address.port());
+
+        let error = ensure_db(&path, &url).await.unwrap_err();
+
+        server.await.unwrap();
+        assert!(error.to_string().contains("не удалось скачать"));
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn ensure_db_downloads_to_a_relative_filename() {
+        let path = temp_path("relative-download")
+            .file_name()
+            .unwrap()
+            .to_owned();
+        let path = std::path::PathBuf::from(path);
+        let (url, server) = serve_once("200 OK", padded_database()).await;
+
+        ensure_db(&path, &url).await.unwrap();
+        assert_eq!(GeoDb::open(&path).unwrap().stats(), (1, 1, 0));
+        server.await.unwrap();
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn ensure_db_rejects_small_and_invalid_downloads_without_replacing_cache() {
+        let path = temp_path("invalid-download");
+        std::fs::write(&path, b"keep existing contents").unwrap();
+
+        let (url, server) = serve_once("200 OK", b"too small".to_vec()).await;
+        assert!(ensure_db(&path, &url).await.is_err());
+        server.await.unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"keep existing contents");
+
+        let (url, server) = serve_once("200 OK", vec![0; 1200]).await;
+        assert!(ensure_db(&path, &url).await.is_err());
+        server.await.unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"keep existing contents");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn ensure_db_cleans_up_temporary_download_when_destination_is_a_directory() {
+        let parent = temp_path("directory-destination");
+        std::fs::create_dir(&parent).unwrap();
+        let destination = parent.join("geoip.dat");
+        std::fs::create_dir(&destination).unwrap();
+        let (url, server) = serve_once("200 OK", padded_database()).await;
+
+        assert!(ensure_db(&destination, &url).await.is_err());
+        server.await.unwrap();
+
+        let entries = std::fs::read_dir(&parent)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(entries, [std::ffi::OsString::from("geoip.dat")]);
+        assert!(destination.is_dir());
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[tokio::test]
+    async fn ensure_db_reports_empty_destination_after_download() {
+        let (url, server) = serve_once("200 OK", padded_database()).await;
+
+        let error = ensure_db(Path::new(""), &url).await.unwrap_err();
+        server.await.unwrap();
+
+        assert!(error
+            .to_string()
+            .contains("путь назначения не содержит имени файла"));
+    }
+
+    #[tokio::test]
+    async fn ensure_db_reports_http_errors_and_parent_creation_failures() {
+        let path = temp_path("http-error");
+        let (url, server) = serve_once("404 Not Found", b"missing".to_vec()).await;
+        assert!(ensure_db(&path, &url).await.is_err());
+        server.await.unwrap();
+
+        let parent = temp_path("not-a-directory");
+        std::fs::write(&parent, b"file").unwrap();
+        let nested = parent.join("geoip.dat");
+        assert!(ensure_db(&nested, "http://127.0.0.1:1/unreachable")
+            .await
+            .is_err());
+        std::fs::remove_file(parent).unwrap();
+    }
+
+    #[tokio::test]
+    async fn ensure_db_reports_local_connection_errors() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+
+        let error = ensure_db(
+            &temp_path("connection-error"),
+            &format!("http://{address}/geoip.dat"),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("не удалось скачать"));
+    }
+
+    #[test]
+    fn parse_builds_ipv4_ranges_for_partial_and_full_prefixes() {
+        let bytes = database(&[
+            entry("AA", &[(&[192, 0, 2, 99], 24)]),
+            entry("BB", &[(&[198, 51, 100, 7], 32)]),
+        ]);
+        let db = GeoDb::parse(&bytes).unwrap();
+        assert_eq!(db.iso_for("192.0.2.0".parse().unwrap()), Some("AA"));
+        assert_eq!(db.iso_for("192.0.2.255".parse().unwrap()), Some("AA"));
+        assert_eq!(db.iso_for("192.0.3.0".parse().unwrap()), None);
+        assert_eq!(db.iso_for("198.51.100.7".parse().unwrap()), Some("BB"));
+        assert_eq!(db.iso_for("198.51.100.8".parse().unwrap()), None);
+        assert_eq!(db.stats(), (2, 2, 0));
+    }
+
+    #[test]
+    fn parse_builds_ipv6_ranges_for_partial_and_full_prefixes() {
+        let block: Ipv6Addr = "2001:db8:abcd::1234".parse().unwrap();
+        let exact: Ipv6Addr = "2001:db8:ffff::1".parse().unwrap();
+        let bytes = database(&[
+            entry("V6", &[(block.octets().as_slice(), 48)]),
+            entry("EX", &[(exact.octets().as_slice(), 128)]),
+        ]);
+        let db = GeoDb::parse(&bytes).unwrap();
+        assert_eq!(
+            db.iso_for("2001:db8:abcd:ffff::1".parse().unwrap()),
+            Some("V6")
+        );
+        assert_eq!(db.iso_for("2001:db8:abce::1".parse().unwrap()), None);
+        assert_eq!(db.iso_for(exact.into()), Some("EX"));
+        assert_eq!(db.stats(), (2, 0, 2));
+    }
+
+    #[test]
+    fn iso_lookup_checks_inclusive_ipv4_and_ipv6_range_boundaries_and_gaps() {
+        let network_v6: Ipv6Addr = "2001:db8:abcd::".parse().unwrap();
+        let db = GeoDb::parse(&database(&[
+            entry("V4", &[(&[192, 0, 2, 0], 24)]),
+            entry("V6", &[(network_v6.octets().as_slice(), 120)]),
+        ]))
+        .unwrap();
+
+        assert_eq!(db.iso_for("192.0.2.0".parse().unwrap()), Some("V4"));
+        assert_eq!(db.iso_for("192.0.2.255".parse().unwrap()), Some("V4"));
+        assert_eq!(db.iso_for("192.0.3.0".parse().unwrap()), None);
+        assert_eq!(db.iso_for("2001:db8:abcd::".parse().unwrap()), Some("V6"));
+        assert_eq!(db.iso_for("2001:db8:abcd::ff".parse().unwrap()), Some("V6"));
+        assert_eq!(db.iso_for("2001:db8:abcd::100".parse().unwrap()), None);
+    }
+
+    #[test]
+    fn parse_accepts_default_routes_and_skips_invalid_address_width_or_prefix() {
+        let bytes = database(&[entry(
+            "ALL",
+            &[
+                (&[203, 0, 113, 9], 0),
+                (&[203, 0, 113, 9], 33),
+                (&[1, 2, 3], 24),
+                (&[0; 16], 129),
+            ],
+        )]);
+        let db = GeoDb::parse(&bytes).unwrap();
+        assert_eq!(db.iso_for("255.255.255.255".parse().unwrap()), Some("ALL"));
+        assert_eq!(db.stats(), (1, 1, 0));
+    }
+
+    #[test]
+    fn parse_skips_malformed_cidr_and_keeps_valid_ranges() {
+        let mut payload = field_bytes(1, b"US");
+        payload.extend(field_bytes(2, &[0x0d])); // unsupported fixed-width CIDR field
+        payload.extend(field_bytes(2, &cidr(&[8, 8, 8, 8], 32)));
+        let db = GeoDb::parse(&database(&[field_bytes(1, &payload)])).unwrap();
+
+        assert_eq!(db.stats(), (1, 1, 0));
+        assert_eq!(db.iso_for("8.8.8.8".parse().unwrap()), Some("US"));
+    }
+
+    #[test]
+    fn parse_rejects_malformed_outer_and_inner_protobuf() {
+        assert!(GeoDb::parse(&[0x0a, 0x05, 0x01]).is_err()); // outer length exceeds input
+        assert!(GeoDb::parse(&[0x0a, 0x80]).is_err()); // truncated outer length
+        assert!(GeoDb::parse(&[0x08, 0x00]).is_err()); // unexpected top-level key
+        assert!(GeoDb::parse(&database(&[field_bytes(1, &[0x0a, 0x80])])).is_err());
+        assert!(GeoDb::parse(&database(&[field_bytes(1, &[0x0b])])).is_err());
+        assert!(GeoDb::parse(&database(&[field_bytes(1, &[0x0a, 0x04, 0x41])])).is_err());
+        assert!(GeoDb::parse(&database(&[field_bytes(1, &[0x12, 0x02, 0x01])])).is_err());
+        assert!(GeoDb::parse(&database(&[field_bytes(1, &[0x4a, 0x02, 0x01])])).is_err());
+        assert!(GeoDb::parse(&database(&[field_bytes(1, &[0x48, 0x80])])).is_err());
+    }
+
+    #[test]
+    fn parse_requires_enough_entries_and_at_least_one_valid_range() {
+        let few = entry("AA", &[(&[192, 0, 2, 1], 24)]);
+        assert!(GeoDb::parse(&few).is_err());
+        assert!(GeoDb::parse(&database(&[entry("AA", &[])])).is_err());
+    }
+
+    #[test]
+    fn local_ip_recognizes_private_special_and_public_addresses() {
+        for ip in [
+            "127.0.0.1",
+            "10.2.3.4",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.1.1",
+            "0.0.0.0",
+        ] {
+            assert!(local_ip(ip.parse().unwrap()), "{ip} should be local");
+        }
+        for ip in ["8.8.8.8", "1.1.1.1"] {
+            assert!(!local_ip(ip.parse().unwrap()), "{ip} should be public");
+        }
+        for ip in ["::", "::1", "fc00::1", "fd12::1", "fe80::1"] {
+            assert!(local_ip(ip.parse().unwrap()), "{ip} should be local");
+        }
+        assert!(!local_ip("2001:4860:4860::8888".parse().unwrap()));
+    }
+
+    #[tokio::test]
+    async fn assign_countries_assigns_public_and_local_ip_addresses_without_dns() {
+        let bytes = database(&[
+            entry("us", &[(&[8, 8, 8, 0], 24)]),
+            entry("de", &[(&[1, 1, 1, 1], 32)]),
+        ]);
+        let db = GeoDb::parse(&bytes).unwrap();
+        let mut proxies = vec![
+            proxy("8.8.8.8"),
+            proxy("8.8.8.9"),
+            proxy("1.1.1.1"),
+            proxy("192.168.1.10"),
+            proxy("203.0.113.1"),
+        ];
+
+        let counts = assign_countries(&mut proxies, &db).await.unwrap();
+
+        assert_eq!(counts.get("US"), Some(&2));
+        assert_eq!(counts.get("DE"), Some(&1));
+        assert_eq!(counts.get("XX"), Some(&2));
+        assert_eq!(
+            proxies
+                .iter()
+                .map(|p| p.country.as_str())
+                .collect::<Vec<_>>(),
+            ["US", "US", "DE", "XX", "XX"]
+        );
+        assert_eq!(proxies[0].display, "[US] - 001");
+        assert_eq!(proxies[1].display, "[US] - 002");
+        assert_eq!(proxies[2].display, "[DE] - 001");
+        assert_eq!(proxies[3].display, "[XX] - 001");
+        assert_eq!(proxies[4].display, "[XX] - 002");
+    }
+
+    #[tokio::test]
+    async fn assign_countries_keeps_local_ip_unassigned_even_if_database_has_a_country() {
+        let db = GeoDb::parse(&database(&[
+            entry("PRIVATE", &[(&[192, 168, 1, 0], 24)]),
+            entry("PUBLIC", &[(&[8, 8, 8, 0], 24)]),
+        ]))
+        .unwrap();
+        let mut proxies = vec![proxy("192.168.1.10"), proxy("8.8.8.8")];
+
+        let counts = assign_countries(&mut proxies, &db).await.unwrap();
+
+        assert_eq!(counts.get("XX"), Some(&1));
+        assert_eq!(counts.get("PUBLIC"), Some(&1));
+        assert_eq!(proxies[0].country, "XX");
+        assert_eq!(proxies[1].country, "PUBLIC");
+    }
+
+    #[tokio::test]
+    async fn assign_countries_resolves_localhost_once_and_handles_empty_input() {
+        let db = GeoDb::parse(&database(&[entry("US", &[(&[8, 8, 8, 8], 32)])])).unwrap();
+        let mut proxies = vec![proxy("localhost"), proxy("localhost")];
+
+        let counts = assign_countries(&mut proxies, &db).await.unwrap();
+
+        assert_eq!(counts.get("XX"), Some(&2));
+        assert_eq!(proxies[0].display, "[XX] - 001");
+        assert_eq!(proxies[1].display, "[XX] - 002");
+
+        let mut empty = [];
+        assert!(assign_countries(&mut empty, &db).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn resolve_host_keeps_public_ip_literals_and_excludes_local_literals() {
+        assert_eq!(
+            resolve_host("8.8.8.8".into()).await.1,
+            Some("8.8.8.8".parse().unwrap())
+        );
+        assert_eq!(resolve_host("127.0.0.1".into()).await.1, None);
+    }
+
+    #[test]
+    fn country_summary_is_sorted_limited_and_empty_for_no_countries() {
+        let empty = HashMap::new();
+        assert_eq!(country_summary_line(&empty), None);
+        print_country_summary(&empty);
+
+        let counts: HashMap<_, _> = (1..=13).map(|n| (format!("C{n:02}"), n)).collect();
+        let line = country_summary_line(&counts).unwrap();
+        assert_eq!(
+            line,
+            "Стран в результатах: 13, распределение: C13: 13, C12: 12, C11: 11, C10: 10, C09: 9, C08: 8, C07: 7, C06: 6, C05: 5, C04: 4, C03: 3, C02: 2"
+        );
+        print_country_summary(&counts);
+    }
+
+    #[test]
+    fn iso_lookup_keeps_ipv4_and_ipv6_families_separate() {
+        let db = GeoDb {
+            v4: Vec::new(),
+            v6: Vec::new(),
+            names: Vec::new(),
+        };
+        assert_eq!(db.iso_for(IpAddr::V4(Ipv4Addr::LOCALHOST)), None);
+        assert_eq!(db.iso_for(IpAddr::V6(Ipv6Addr::LOCALHOST)), None);
+    }
+
+    #[test]
+    fn deterministic_malformed_protobuf_corpus_never_panics() {
+        // Valid length-delimited keys followed by u64::MAX encoded as their lengths.
+        for malformed in [
+            vec![
+                0x0a, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01,
+            ],
+            vec![
+                0x0a, 0x01, 0x0a, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01,
+            ],
+        ] {
+            assert!(std::panic::catch_unwind(|| GeoDb::parse(&malformed)).is_ok());
+        }
+
+        let mut state = 0x3c6e_f372_fe94_f82bu64;
+        for case in 0..2_000 {
+            let len = (next(&mut state) % 256) as usize;
+            let mut bytes = Vec::with_capacity(len);
+            for _ in 0..len {
+                bytes.push(next(&mut state) as u8);
+            }
+            assert!(
+                std::panic::catch_unwind(|| GeoDb::parse(&bytes)).is_ok(),
+                "case {case}"
+            );
+        }
+    }
+
+    fn next(state: &mut u64) -> u64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        *state
+    }
 }
