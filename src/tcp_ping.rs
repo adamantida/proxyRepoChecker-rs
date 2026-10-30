@@ -2,70 +2,90 @@ use crate::parse::Proxy;
 use futures::stream::{self, StreamExt};
 use std::collections::HashMap;
 use std::future::Future;
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Default)]
 pub struct TcpStats {
+    /// Все прокси, попавшие в фазу (включая UDP-прокси без TCP-проверки).
     pub total: usize,
+    /// Сколько прокси реально проверено TCP-коннектом (`total - udp_skipped`).
+    pub checked: usize,
+    /// Все выжившие: TCP-живые + UDP-прокси без проверки (столько же в `alive.txt`).
     pub alive: usize,
+    /// Выжившие именно после TCP-проверки.
+    pub tcp_alive: usize,
     pub dead: usize,
     pub udp_skipped: usize,
     pub max_ms_seen: u64,
 }
 
-fn is_udp_proxy(proxy: &Proxy) -> bool {
+/// Hysteria работает поверх UDP, поэтому TCP-коннект к её порту ничего не
+/// проверяет: такие узлы переходят в следующую фазу без TCP-проверки.
+pub fn is_udp_proxy(proxy: &Proxy) -> bool {
     matches!(proxy.proto, "hysteria" | "hysteria2")
 }
+
+/// Кэш разрешённых имён: `host -> IP-адреса` без порта, чтобы узлы с одинаковым
+/// хостом и разными портами переиспользовали одно разрешение.
+type AddrCache = Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::OnceCell<Vec<IpAddr>>>>>>;
 
 async fn resolve(
     host: &str,
     port: u16,
-    cache: &Arc<tokio::sync::Mutex<HashMap<String, Vec<SocketAddr>>>>,
+    cache: &AddrCache,
     dns_concurrency: &Arc<tokio::sync::Semaphore>,
     timeout: Duration,
 ) -> Option<Vec<SocketAddr>> {
     if let Ok(addr) = host.parse::<std::net::IpAddr>() {
         return Some(vec![SocketAddr::new(addr, port)]);
     }
-    {
-        let c = cache.lock().await;
-        if let Some(addrs) = c.get(host) {
-            if addrs.is_empty() {
-                return None;
-            }
-            return Some(addrs.clone());
-        }
-    }
-    // `getaddrinfo` may block inside the platform resolver. Run it off-runtime,
-    // cap its concurrency, and bound both semaphore and result waits.
-    let permit = resolve_with_timeout(dns_concurrency.clone().acquire_owned(), timeout)
-        .await?
-        .ok()?;
-    let cache_host = host.to_owned();
-    let lookup_host = cache_host.clone();
-    let (sender, receiver) = tokio::sync::oneshot::channel();
-    std::thread::Builder::new()
-        .name("proxy-dns".to_owned())
-        .spawn(move || {
-            let addrs = (lookup_host.as_str(), port)
-                .to_socket_addrs()
-                .map(|addresses| addresses.collect::<Vec<SocketAddr>>())
-                .unwrap_or_default();
-            let _ = sender.send(addrs);
-            drop(permit);
-        })
-        .ok()?;
-    let addrs = resolve_with_timeout(receiver, timeout)
-        .await?
-        .unwrap_or_default();
-    let mut c = cache.lock().await;
-    c.insert(cache_host, addrs.clone());
-    if addrs.is_empty() {
+    let cell = {
+        let mut c = cache.lock().await;
+        Arc::clone(c.entry(host.to_owned()).or_default())
+    };
+    // OnceCell даёт «single flight»: одновременные проверки одного хоста ждут
+    // одно разрешение, а не запускают по потоку на каждый узел.
+    let ips = cell
+        .get_or_init(|| lookup_host(host, dns_concurrency, timeout))
+        .await;
+    if ips.is_empty() {
         None
     } else {
-        Some(addrs)
+        Some(ips.iter().map(|ip| SocketAddr::new(*ip, port)).collect())
+    }
+}
+
+/// `getaddrinfo` блокирует поток ОС, поэтому уводим его с async-рантайма.
+/// Число одновременных разрешений ограничено семафором; результат (включая
+/// неудачу) кэшируется вызывающим через [`OnceCell`].
+async fn lookup_host(
+    host: &str,
+    dns_concurrency: &Arc<tokio::sync::Semaphore>,
+    timeout: Duration,
+) -> Vec<IpAddr> {
+    let Ok(permit) = dns_concurrency.clone().acquire_owned().await else {
+        return Vec::new();
+    };
+    let lookup_host = host.to_owned();
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let spawned = std::thread::Builder::new()
+        .name("proxy-dns".to_owned())
+        .spawn(move || {
+            let ips = (lookup_host.as_str(), 0)
+                .to_socket_addrs()
+                .map(|addresses| addresses.map(|addr| addr.ip()).collect::<Vec<_>>())
+                .unwrap_or_default();
+            let _ = sender.send(ips);
+            drop(permit);
+        });
+    if spawned.is_err() {
+        return Vec::new();
+    }
+    match resolve_with_timeout(receiver, timeout).await {
+        Some(Ok(ips)) => ips,
+        _ => Vec::new(),
     }
 }
 
@@ -89,23 +109,28 @@ async fn probe(
     timeout: Duration,
     retries: u32,
     max_ms: u64,
-    cache: &Arc<tokio::sync::Mutex<HashMap<String, Vec<SocketAddr>>>>,
+    cache: &AddrCache,
     dns_concurrency: &Arc<tokio::sync::Semaphore>,
 ) -> Option<u64> {
     let addrs = resolve(&proxy.host, proxy.port, cache, dns_concurrency, timeout).await?;
     let attempts = retries.max(1);
     let mut best: Option<u64> = None;
     for _ in 0..attempts {
-        for addr in &addrs {
+        // Проверяем все адреса хоста параллельно: последовательный перебор
+        // умножал время мёртвого узла на число A/AAAA-записей.
+        let rtts = futures::future::join_all(addrs.iter().map(|addr| async move {
             let start = Instant::now();
-            let res = tokio::time::timeout(timeout, tokio::net::TcpStream::connect(addr)).await;
-            if let Ok(Ok(_stream)) = res {
-                let rtt = start.elapsed().as_millis() as u64;
-                best = Some(match best {
-                    Some(b) => b.min(rtt),
-                    None => rtt,
-                });
+            match tokio::time::timeout(timeout, tokio::net::TcpStream::connect(addr)).await {
+                Ok(Ok(_stream)) => Some(start.elapsed().as_millis() as u64),
+                _ => None,
             }
+        }))
+        .await;
+        if let Some(rtt) = rtts.into_iter().flatten().min() {
+            best = Some(match best {
+                Some(b) => b.min(rtt),
+                None => rtt,
+            });
         }
         if best.is_some() {
             break;
@@ -125,7 +150,7 @@ pub async fn filter(
 ) -> (Vec<Proxy>, Vec<Proxy>, TcpStats) {
     let input_total = proxies.len();
     let udp_skipped = proxies.iter().filter(|proxy| is_udp_proxy(proxy)).count();
-    let total = proxies.len().saturating_sub(udp_skipped);
+    let checked = proxies.len().saturating_sub(udp_skipped);
     let mut udp_proxies = Vec::with_capacity(udp_skipped);
     let tcp_proxies = proxies
         .into_iter()
@@ -139,9 +164,11 @@ pub async fn filter(
         })
         .collect::<Vec<_>>();
     let timeout = Duration::from_secs_f64(timeout_s.max(0.1));
-    let cache: Arc<tokio::sync::Mutex<HashMap<String, Vec<SocketAddr>>>> =
-        Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-    let dns_concurrency = Arc::new(tokio::sync::Semaphore::new(concurrency.clamp(1, 64)));
+    let cache: AddrCache = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    // Резолвинг — блокирующий вызов ОС, который в плохих сетях живёт секундами.
+    // Раньше потолок был 64, и он становился горлышком всей фазы: каждый
+    // медленный хост держал слот до конца системного таймаута.
+    let dns_concurrency = Arc::new(tokio::sync::Semaphore::new(concurrency.clamp(1, 256)));
 
     let results: Vec<(Proxy, Option<u64>)> = {
         use std::sync::atomic::{AtomicUsize, Ordering as AOrdering};
@@ -161,8 +188,12 @@ pub async fn filter(
                 async move {
                     let rtt = probe(&p, timeout, retries, max_ms, &cache, &dns_concurrency).await;
                     if rtt.is_some() {
-                        alive_count.fetch_add(1, AOrdering::Relaxed);
-                        pb.set_message(alive_count.load(AOrdering::Relaxed).to_string());
+                        // Перерисовка прогресс-бара на каждый живой узел заметно
+                        // тормозит на Windows-консоли, обновляем пачками.
+                        let count = alive_count.fetch_add(1, AOrdering::Relaxed) + 1;
+                        if count % 16 == 0 {
+                            pb.set_message(count.to_string());
+                        }
                     }
                     pb.inc(1);
                     (p, rtt)
@@ -190,8 +221,10 @@ pub async fn filter(
         }
     }
     let stats = TcpStats {
-        total,
-        alive: alive.len().saturating_sub(udp_skipped),
+        total: input_total,
+        checked,
+        alive: alive.len(),
+        tcp_alive: alive.len().saturating_sub(udp_skipped),
         dead: dead.len(),
         udp_skipped,
         max_ms_seen: max_seen,
@@ -264,13 +297,25 @@ mod tests {
         assert_eq!(dead[0].ping, None);
     }
 
+    fn cache_with(entries: &[(&str, Vec<IpAddr>)]) -> AddrCache {
+        let mut map = HashMap::new();
+        for (host, ips) in entries {
+            let cell = tokio::sync::OnceCell::new();
+            cell.set(ips.clone()).unwrap();
+            map.insert((*host).to_owned(), Arc::new(cell));
+        }
+        Arc::new(tokio::sync::Mutex::new(map))
+    }
+
     #[tokio::test]
     async fn filter_handles_empty_input_with_zeroed_statistics() {
         let (alive, dead, stats) = filter(Vec::new(), 0.1, 0, 0, 0).await;
         assert!(alive.is_empty());
         assert!(dead.is_empty());
         assert_eq!(stats.total, 0);
+        assert_eq!(stats.checked, 0);
         assert_eq!(stats.alive, 0);
+        assert_eq!(stats.tcp_alive, 0);
         assert_eq!(stats.dead, 0);
         assert_eq!(stats.udp_skipped, 0);
         assert_eq!(stats.max_ms_seen, 0);
@@ -288,36 +333,69 @@ mod tests {
         assert_eq!(alive.len(), 2);
         assert!(alive.iter().all(|proxy| proxy.ping.is_none()));
         assert!(dead.is_empty());
-        assert_eq!(stats.total, 0);
-        assert_eq!(stats.alive, 0);
+        // UDP-узлы входят в общий итог фазы: иначе «живых» в фазе 1 меньше,
+        // чем узлов в фазе 2 и в alive.txt.
+        assert_eq!(stats.total, 2);
+        assert_eq!(stats.checked, 0);
+        assert_eq!(stats.alive, 2);
+        assert_eq!(stats.tcp_alive, 0);
         assert_eq!(stats.dead, 0);
         assert_eq!(stats.udp_skipped, 2);
     }
 
     #[tokio::test]
-    async fn resolve_uses_cached_positive_and_negative_lookups() {
-        let cache = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    async fn filter_reports_total_alive_count_that_matches_returned_proxies() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let live_port = listener.local_addr().unwrap().port();
+        let accept = tokio::spawn(async move { let _ = listener.accept().await; });
+        let mut udp = proxy(live_port);
+        udp.proto = "hysteria2";
+        let mut dead = proxy(live_port);
+        dead.host = "127.0.0.3".into();
+
+        let (alive, dead_nodes, stats) =
+            filter(vec![proxy(live_port), udp, dead], 0.5, 4, 1, 0).await;
+        accept.await.unwrap();
+
+        assert_eq!(alive.len(), 2);
+        assert_eq!(dead_nodes.len(), 1);
+        assert_eq!(stats.total, 3);
+        assert_eq!(stats.checked, 2);
+        assert_eq!(stats.alive, alive.len());
+        assert_eq!(stats.tcp_alive, 1);
+        assert_eq!(stats.dead, 1);
+        assert_eq!(stats.udp_skipped, 1);
+    }
+
+    #[tokio::test]
+    async fn resolve_reuses_cached_ips_with_the_requested_port() {
+        let cache = cache_with(&[
+            ("cached.example", vec![IpAddr::from([127, 0, 0, 1])]),
+            ("missing.example", Vec::new()),
+        ]);
         let dns_concurrency = Arc::new(tokio::sync::Semaphore::new(4));
-        let expected = "127.0.0.1:8080".parse::<SocketAddr>().unwrap();
-        cache
-            .lock()
-            .await
-            .insert("cached.example".into(), vec![expected]);
-        cache
-            .lock()
-            .await
-            .insert("missing.example".into(), Vec::new());
 
         assert_eq!(
             resolve(
                 "cached.example",
-                1,
+                8443,
                 &cache,
                 &dns_concurrency,
                 Duration::from_secs(1)
             )
             .await,
-            Some(vec![expected])
+            Some(vec!["127.0.0.1:8443".parse::<SocketAddr>().unwrap()])
+        );
+        assert_eq!(
+            resolve(
+                "cached.example",
+                9443,
+                &cache,
+                &dns_concurrency,
+                Duration::from_secs(1)
+            )
+            .await,
+            Some(vec!["127.0.0.1:9443".parse::<SocketAddr>().unwrap()])
         );
         assert_eq!(
             resolve(
@@ -334,7 +412,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_looks_up_hostname_and_caches_results() {
-        let cache = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let cache: AddrCache = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let dns_concurrency = Arc::new(tokio::sync::Semaphore::new(4));
 
         let first = resolve(
@@ -358,12 +436,16 @@ mod tests {
             .await,
             Some(first)
         );
-        assert!(cache.lock().await.contains_key("localhost"));
+        assert!(cache
+            .lock()
+            .await
+            .get("localhost")
+            .is_some_and(|cell| cell.get().is_some()));
     }
 
     #[tokio::test]
     async fn resolve_caches_invalid_hostname_as_negative_result() {
-        let cache = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let cache: AddrCache = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let dns_concurrency = Arc::new(tokio::sync::Semaphore::new(4));
         let invalid_host = "bad\0host";
 
@@ -378,7 +460,11 @@ mod tests {
             .await,
             None
         );
-        assert_eq!(cache.lock().await.get(invalid_host), Some(&Vec::new()));
+        assert!(cache
+            .lock()
+            .await
+            .get(invalid_host)
+            .is_some_and(|cell| cell.get().is_some_and(Vec::is_empty)));
         assert_eq!(
             resolve(
                 invalid_host,
@@ -394,18 +480,18 @@ mod tests {
 
     #[tokio::test]
     async fn probe_checks_each_cached_address_and_keeps_the_best_rtt() {
-        let first = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let second = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let first_addr = first.local_addr().unwrap();
-        let second_addr = second.local_addr().unwrap();
-        let first_accept = tokio::spawn(async move { first.accept().await.unwrap() });
-        let second_accept = tokio::spawn(async move { second.accept().await.unwrap() });
-        let mut sample = proxy(0);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let accepted = tokio::spawn(async move { listener.accept().await.unwrap() });
+        let mut sample = proxy(port);
         sample.host = "cached-multi-address.example".into();
-        let cache = Arc::new(tokio::sync::Mutex::new(HashMap::from([(
-            sample.host.clone(),
-            vec![first_addr, second_addr],
-        )])));
+        let cache = cache_with(&[(
+            "cached-multi-address.example",
+            vec![
+                IpAddr::from([127, 0, 0, 3]),
+                IpAddr::from([127, 0, 0, 1]),
+            ],
+        )]);
         let dns_concurrency = Arc::new(tokio::sync::Semaphore::new(4));
 
         let rtt = probe(
@@ -419,18 +505,14 @@ mod tests {
         .await;
 
         assert!(rtt.is_some());
-        first_accept.await.unwrap();
-        second_accept.await.unwrap();
+        accepted.await.unwrap();
     }
 
     #[tokio::test]
     async fn probe_returns_none_for_a_cached_negative_host_lookup() {
         let mut sample = proxy(443);
         sample.host = "cached-negative.example".into();
-        let cache = Arc::new(tokio::sync::Mutex::new(HashMap::from([(
-            sample.host.clone(),
-            Vec::new(),
-        )])));
+        let cache = cache_with(&[("cached-negative.example", Vec::new())]);
         let dns_concurrency = Arc::new(tokio::sync::Semaphore::new(4));
 
         assert_eq!(
