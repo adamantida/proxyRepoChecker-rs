@@ -4,6 +4,10 @@ use crate::{num, put, str_val, Source};
 use serde_json::Value;
 use serde_yaml_ng::{Mapping, Value as Yaml};
 
+/// Запасные значения скорости для Hysteria 1, если в ссылке их не было.
+const DEFAULT_HYSTERIA1_UP: &str = "10 Mbps";
+const DEFAULT_HYSTERIA1_DOWN: &str = "50 Mbps";
+
 /// Преобразует [`Source`] в Clash-proxy. `None` — неизвестный протокол.
 pub fn to_clash(s: &Source) -> Option<Mapping> {
     let st = &s.settings;
@@ -80,8 +84,7 @@ pub fn to_clash(s: &Source) -> Option<Mapping> {
             } else {
                 copy_text_setting(&mut m, "obfs", st, &["obfs"]);
             }
-            copy_rate_setting(&mut m, "up", st, &["up", "upMbps", "up_mbps"]);
-            copy_rate_setting(&mut m, "down", st, &["down", "downMbps", "down_mbps"]);
+            apply_hysteria1_rates(&mut m, st);
             copy_text_setting(&mut m, "ports", st, &["ports"]);
             copy_scalar_setting(&mut m, "hop-interval", st, &["hopInterval", "hop-interval"]);
             apply_hysteria_tls(&mut m, st);
@@ -102,8 +105,13 @@ pub fn to_clash(s: &Source) -> Option<Mapping> {
                 st,
                 &["obfsPassword", "obfs-password", "obfs_password"],
             );
-            copy_rate_setting(&mut m, "up", st, &["up", "upMbps", "up_mbps"]);
-            copy_rate_setting(&mut m, "down", st, &["down", "downMbps", "down_mbps"]);
+            copy_rate_setting(&mut m, "up", st, &["up", "upMbps", "upmbps", "up_mbps"]);
+            copy_rate_setting(
+                &mut m,
+                "down",
+                st,
+                &["down", "downMbps", "downmbps", "down_mbps"],
+            );
             copy_text_setting(&mut m, "ports", st, &["ports"]);
             copy_scalar_setting(&mut m, "hop-interval", st, &["hopInterval", "hop-interval"]);
             apply_hysteria_tls(&mut m, st);
@@ -145,6 +153,26 @@ fn copy_rate_setting(m: &mut Mapping, output_key: &str, settings: &Value, keys: 
     });
     if let Some(value) = value {
         put(m, output_key, str_val(&value));
+    }
+}
+
+/// Hysteria 1 обязателен в mihomo: поля `up`/`down` не имеют `omitempty`, и
+/// если хотя бы у одного узла их нет, конфиг целиком не загружается
+/// (`proxy N has unset fields: down, up`). Поэтому подставляем разумные
+/// значения, если в ссылке не оказалось `upmbps`/`downmbps`.
+fn apply_hysteria1_rates(m: &mut Mapping, settings: &Value) {
+    copy_rate_setting(m, "up", settings, &["up", "upMbps", "upmbps", "up_mbps"]);
+    copy_rate_setting(
+        m,
+        "down",
+        settings,
+        &["down", "downMbps", "downmbps", "down_mbps"],
+    );
+    if !m.contains_key(str_val("up")) {
+        put(m, "up", str_val(DEFAULT_HYSTERIA1_UP));
+    }
+    if !m.contains_key(str_val("down")) {
+        put(m, "down", str_val(DEFAULT_HYSTERIA1_DOWN));
     }
 }
 
@@ -527,8 +555,8 @@ mod tests {
                 "protocol": "wechat-video",
                 "obfs": "xplus",
                 "obfsParam": "obfuscation-secret",
-                "upMbps": 25,
-                "down_mbps": "80 Mbps",
+                "upmbps": 25,
+                "downmbps": 80,
                 "ports": "1000-2000",
                 "hopInterval": 15,
                 "sni": "front.example",
@@ -544,7 +572,7 @@ mod tests {
         assert_eq!(string(&proxy, "protocol"), Some("wechat-video"));
         assert_eq!(string(&proxy, "obfs"), Some("obfuscation-secret"));
         assert_eq!(string(&proxy, "up"), Some("25"));
-        assert_eq!(string(&proxy, "down"), Some("80 Mbps"));
+        assert_eq!(string(&proxy, "down"), Some("80"));
         assert_eq!(string(&proxy, "ports"), Some("1000-2000"));
         assert_eq!(
             proxy.get(str_val("hop-interval")).and_then(Yaml::as_u64),
@@ -560,6 +588,27 @@ mod tests {
             Some(&Yaml::Sequence(vec![str_val("h3"), str_val("http/1.1")]))
         );
         assert_eq!(proxy.get(str_val("udp")), Some(&Yaml::Bool(true)));
+    }
+
+    #[test]
+    fn hysteria1_always_has_required_up_and_down_fields() {
+        // mihomo отвергает весь конфиг, если у hysteria-узла нет `up`/`down`.
+        // Реальные ссылки приходят с `upmbps`/`downmbps` от парсера.
+        for settings in [
+            json!({"upmbps": 11, "downmbps": 55}),
+            json!({"up": "12 Mbps", "down": 60}),
+            json!({}),
+        ] {
+            let proxy = to_clash(&source("hysteria", settings, None)).unwrap();
+            for key in ["up", "down"] {
+                let value = string(&proxy, key).unwrap_or_default();
+                assert!(!value.is_empty(), "у hysteria нет {key}");
+            }
+        }
+
+        let hy2 = to_clash(&source("hysteria2", json!({}), None)).unwrap();
+        assert!(!hy2.contains_key(str_val("up")));
+        assert!(!hy2.contains_key(str_val("down")));
     }
 
     #[test]
@@ -624,7 +673,8 @@ mod tests {
         assert_eq!(string(&v1, "type"), Some("hysteria"));
         assert_eq!(string(&v1, "auth-str"), Some(""));
         assert_eq!(string(&v1, "protocol"), Some("udp"));
-        assert!(!v1.contains_key(str_val("up")));
+        assert_eq!(string(&v1, "up"), Some(DEFAULT_HYSTERIA1_UP));
+        assert_eq!(string(&v1, "down"), Some(DEFAULT_HYSTERIA1_DOWN));
         assert!(!v1.contains_key(str_val("skip-cert-verify")));
 
         let v2 = to_clash(&source("hy2", json!({}), None)).unwrap();
