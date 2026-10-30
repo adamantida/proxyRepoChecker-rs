@@ -615,9 +615,15 @@ pub(super) async fn run(mut cli: Cli) -> anyhow::Result<Summary> {
     let mut candidates = proxies;
     sum.tcp_enabled = !cli.no_tcp_ping;
     if !cli.no_tcp_ping && resume_stage < checkpoint::PipelineStage::TcpPing {
+        let udp_skipped = candidates
+            .iter()
+            .filter(|proxy| tcp_ping::is_udp_proxy(proxy))
+            .count();
         info!(
-            "Фаза 1 (TCP ping): {} адресов, timeout {}s, конкурентность {}, попытки {}{}",
+            "Фаза 1 (TCP ping): {} прокси (TCP-проверка {}, UDP без проверки {}), timeout {}s, конкурентность {}, попытки {}{}",
             candidates.len(),
+            candidates.len().saturating_sub(udp_skipped),
+            udp_skipped,
             cli.tcp_timeout,
             cli.tcp_concurrency,
             cli.tcp_retries,
@@ -639,13 +645,20 @@ pub(super) async fn run(mut cli: Cli) -> anyhow::Result<Summary> {
         sum.tcp_secs = t.elapsed().as_secs_f64();
         sum.tcp_total = st.total;
         sum.tcp_alive = st.alive;
+        let pct = if st.total == 0 {
+            0.0
+        } else {
+            st.alive as f64 * 100.0 / st.total as f64
+        };
         success!(
-            "Живых TCP {}/{} (макс. RTT {} мс), UDP-прокси без TCP-проверки {}, мёртвых {}",
+            "Живых {}/{} ({pct:.1}%): TCP {}/{}, UDP без TCP-проверки {}; мёртвых {}; макс. RTT {} мс",
             st.alive,
             st.total,
-            st.max_ms_seen,
+            st.tcp_alive,
+            st.checked,
             st.udp_skipped,
-            st.dead
+            st.dead,
+            st.max_ms_seen
         );
         dead_urls.extend(dead.iter().map(|p| p.base_url.clone()));
         for proxy in &alive {
