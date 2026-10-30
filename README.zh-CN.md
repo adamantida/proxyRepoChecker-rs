@@ -6,7 +6,7 @@
 
 `proxy-rs` 从订阅中收集代理，检查连通性和速度，并帮助生成 Clash/mihomo 配置。支持 Windows、macOS 和 Linux。
 
-[![CI checks](https://img.shields.io/badge/CI-manual%20checks-blue?logo=githubactions&logoColor=white)](https://github.com/tnAnGel/proxyRepoChecker-rs/actions/workflows/cross-platform.yml)
+[![CI checks](https://img.shields.io/badge/CI-manual%20checks-blue?logo=githubactions&logoColor=white)](https://github.com/adamantida/proxyRepoChecker-rs/actions/workflows/cross-platform.yml)
 ![Rust 2021](https://img.shields.io/badge/Rust-2021-orange)
 ![Windows · macOS · Linux](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-64748b)
 
@@ -157,12 +157,12 @@ Ubuntu、macOS 和 Windows 的构建与测试 workflow 可手动运行。代理�
 
 | 用途 | 文件 |
 |---|---|
-| 可直接导入 Clash/mihomo 的配置 | [📥 clash.yaml](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/clash.yaml) |
-| 通过速度检查的代理 | [⚡ good.txt](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/good.txt) |
-| 通过已启用检查的全部代理 | [✅ alive.txt](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/alive.txt) |
-| 检查未通过的代理 | [🧾 dead.txt](https://raw.githubusercontent.com/tnAnGel/proxyRepoChecker-rs/dist/dead.txt) |
+| 可直接导入 Clash/mihomo 的配置 | [📥 clash.yaml](https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/clash.yaml) |
+| 通过速度检查的代理 | [⚡ good.txt](https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/good.txt) |
+| 通过已启用检查的全部代理 | [✅ alive.txt](https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/alive.txt) |
+| 检查未通过的代理 | [🧾 dead.txt](https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/dead.txt) |
 
-发布 workflow 每 30 分钟运行一次，即 **UTC 每小时的第 11 分钟和第 41 分钟**；也可在 [GitHub Actions](https://github.com/tnAnGel/proxyRepoChecker-rs/actions/workflows/proxy-collection.yml) 中手动启动。成功检查后才会更新文件；如果运行失败，现有链接仍会提供上一版结果。GitHub 负载较高时，计划任务可能稍有延迟。
+发布 workflow 每 60 分钟运行一次，即；也可在 [GitHub Actions](https://github.com/adamantida/proxyRepoChecker-rs/actions/workflows/proxy-collection.yml) 中手动启动。成功检查后才会更新文件；如果运行失败，现有链接仍会提供上一版结果。GitHub 负载较高时，计划任务可能稍有延迟。
 
 ## 💬 uSphere VPN
 
