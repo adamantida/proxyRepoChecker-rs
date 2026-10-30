@@ -762,10 +762,17 @@ fn map_transport(kind: &str, s: &Map<String, Value>) -> Result<Value, String> {
         "ws" => {
             reject_unknown(
                 s,
-                &["path", "headers", "maxEarlyData", "earlyDataHeaderName"],
+                &[
+                    "path",
+                    "host",
+                    "headers",
+                    "maxEarlyData",
+                    "earlyDataHeaderName",
+                ],
             )?;
             copy_json(s, "path", &mut t, "path")?;
             let headers = header_map(s)?;
+            let headers = with_host_header(headers, s)?;
             if !headers.is_null() {
                 t.insert("headers".into(), headers);
             }
@@ -833,6 +840,30 @@ fn header_map(s: &Map<String, Value>) -> Result<Value, String> {
     Ok(Value::Object(result))
 }
 
+/// Xray хранит Host для WebSocket в `wsSettings.host`, а sing-box — в
+/// `transport.headers.Host`. Без этого переноса все ws-узлы из этого проекта
+/// отбрасывались как «unmapped option `host`».
+fn with_host_header(headers: Value, s: &Map<String, Value>) -> Result<Value, String> {
+    let host = match s.get("host") {
+        None | Some(Value::Null) => return Ok(headers),
+        Some(Value::String(host)) if host.is_empty() => return Ok(headers),
+        Some(Value::String(host)) => host.clone(),
+        Some(_) => return Err("WebSocket host must be a string".into()),
+    };
+    let mut headers = match headers {
+        Value::Null => Map::new(),
+        Value::Object(headers) => headers,
+        _ => return Err("transport headers must be an object".to_owned()),
+    };
+    let has_host = headers
+        .keys()
+        .any(|key| key.eq_ignore_ascii_case("host"));
+    if !has_host {
+        headers.insert("Host".into(), Value::String(host));
+    }
+    Ok(Value::Object(headers))
+}
+
 fn tls_config(
     settings: &Map<String, Value>,
     legacy: Option<&Value>,
@@ -856,6 +887,8 @@ fn tls_config(
                 "alpn",
                 "publicKey",
                 "public_key",
+                // Xray Reality: публичный ключ лежит в `password`.
+                "password",
                 "shortId",
                 "short_id",
                 "fingerprint",
@@ -927,13 +960,15 @@ fn tls_config(
                 "server_name",
                 "publicKey",
                 "public_key",
+                // Xray хранит публичный ключ Reality в поле `password`.
+                "password",
                 "shortId",
                 "short_id",
                 "fingerprint",
                 "spiderX",
             ],
         )?;
-        let public_key = str_any(reality, &["publicKey", "public_key"])
+        let public_key = str_any(reality, &["publicKey", "public_key", "password"])
             .ok_or_else(|| "Reality publicKey is required".to_owned())?;
         let short_id = str_any(reality, &["shortId", "short_id"])
             .ok_or_else(|| "Reality shortId is required (empty string is valid)".to_owned())
@@ -965,9 +1000,10 @@ fn tls_config(
             ));
         }
         tls["utls"] = json!({ "enabled": true, "fingerprint": fingerprint });
-        if nonempty_value(reality, "spiderX") {
-            return Err("Reality spiderX has no sing-box client field".into());
-        }
+        // У sing-box нет поля spiderX (путь «паука» Reality): он влияет только
+        // на маскировочный запрос, но не на сам туннель. Xray-описание из
+        // этого проекта всегда содержит spiderX (по умолчанию "/"), поэтому
+        // отбрасывать такой узел целиком было бы хуже, чем опустить поле.
     }
     Ok(tls)
 }
@@ -1256,6 +1292,76 @@ mod tests {
         assert_eq!(
             config["outbounds"][0]["tls"]["utls"],
             json!({"enabled":true,"fingerprint":"chrome"})
+        );
+    }
+
+    #[test]
+    fn accepts_xray_shapes_emitted_by_this_project() {
+        // `src/outbound.rs` кладёт Host в `wsSettings.host` (а не в headers) и
+        // публичный ключ Reality в `password`, плюс всегда пишет `spiderX`.
+        let ws = source(
+            "vless",
+            json!({"id":"u","level":0,"encryption":"none","flow":""}),
+            Some(json!({
+                "network":"ws",
+                "security":"tls",
+                "wsSettings":{"path":"/ws","host":"front.example"},
+                "tlsSettings":{"serverName":"sni.example","fingerprint":"chrome"}
+            })),
+        );
+        let reality = source(
+            "vless",
+            json!({"id":"u","level":0,"encryption":"none","flow":""}),
+            Some(json!({
+                "network":"tcp",
+                "security":"reality",
+                "realitySettings":{
+                    "password":"pk",
+                    "shortId":"ab",
+                    "serverName":"cover.example",
+                    "fingerprint":"chrome",
+                    "spiderX":"/"
+                }
+            })),
+        );
+        let (text, report) = render(&[ws, reality], &Options::default()).unwrap();
+        assert_eq!(report.supported_count(), 2, "{:?}", report.skipped_nodes);
+        let config: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            config["outbounds"][0]["transport"]["headers"]["Host"],
+            "front.example"
+        );
+        assert_eq!(
+            config["outbounds"][1]["tls"]["reality"]["public_key"],
+            "pk"
+        );
+    }
+
+    #[test]
+    fn empty_ws_host_and_explicit_headers_host_are_handled() {
+        let empty_host = source(
+            "vless",
+            json!({"id":"u"}),
+            Some(json!({
+                "network":"ws",
+                "wsSettings":{"path":"/","host":""}
+            })),
+        );
+        let explicit = source(
+            "vless",
+            json!({"id":"u"}),
+            Some(json!({
+                "network":"ws",
+                "wsSettings":{"path":"/","host":"ignored.example","headers":{"Host":"kept.example"}}
+            })),
+        );
+        let (text, report) = render(&[empty_host, explicit], &Options::default()).unwrap();
+        assert_eq!(report.supported_count(), 2, "{:?}", report.skipped_nodes);
+        let config: Value = serde_json::from_str(&text).unwrap();
+        assert!(config["outbounds"][0]["transport"].get("headers").is_none());
+        assert_eq!(
+            config["outbounds"][1]["transport"]["headers"]["Host"],
+            "kept.example"
         );
     }
 
