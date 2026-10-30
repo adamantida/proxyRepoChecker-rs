@@ -162,7 +162,7 @@ Push тега вида `vX.Y.Z`, совпадающего с версией в `
 | Все прокси после включённых проверок | [✅ alive.txt](https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/alive.txt) |
 | Прокси, отклонённые проверками | [🧾 dead.txt](https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/dead.txt) |
 
-Публикация запускается каждые 60 минут — и вручную через [GitHub Actions](https://github.com/adamantida/proxyRepoChecker-rs/actions/workflows/proxy-collection.yml). Новые файлы появляются после успешного завершения проверки; если запуск завершится ошибкой, текущие ссылки продолжат работать с предыдущими результатами. GitHub может немного задержать запуск при высокой нагрузке.
+Публикация запускается каждые 30 минут — в **11 и 41 минуту UTC** — и вручную через [GitHub Actions](https://github.com/adamantida/proxyRepoChecker-rs/actions/workflows/proxy-collection.yml). Новые файлы появляются после успешного завершения проверки; если запуск завершится ошибкой, текущие ссылки продолжат работать с предыдущими результатами. GitHub может немного задержать запуск при высокой нагрузке.
 
 ## 💬 uSphere VPN
 

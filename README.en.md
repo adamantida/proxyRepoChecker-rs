@@ -162,7 +162,7 @@ Open a RAW file to view it or copy its link into your app:
 | All proxies after enabled checks | [✅ alive.txt](https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/alive.txt) |
 | Proxies rejected by checks | [🧾 dead.txt](https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/dead.txt) |
 
-Publishing runs every 60 minutes, and can also be started manually from [GitHub Actions](https://github.com/adamantida/proxyRepoChecker-rs/actions/workflows/proxy-collection.yml). New files appear after a successful check; if a run fails, the current links keep serving the previous results. GitHub may delay scheduled runs during periods of high load.
+Publishing runs every 30 minutes, at **:11 and :41 UTC**, and can also be started manually from [GitHub Actions](https://github.com/adamantida/proxyRepoChecker-rs/actions/workflows/proxy-collection.yml). New files appear after a successful check; if a run fails, the current links keep serving the previous results. GitHub may delay scheduled runs during periods of high load.
 
 ## 💬 uSphere VPN
 

@@ -162,7 +162,7 @@ Ubuntu、macOS 和 Windows 的构建与测试 workflow 可手动运行。代理�
 | 通过已启用检查的全部代理 | [✅ alive.txt](https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/alive.txt) |
 | 检查未通过的代理 | [🧾 dead.txt](https://raw.githubusercontent.com/adamantida/proxyRepoChecker-rs/dist/dead.txt) |
 
-发布 workflow 每 60 分钟运行一次，即；也可在 [GitHub Actions](https://github.com/adamantida/proxyRepoChecker-rs/actions/workflows/proxy-collection.yml) 中手动启动。成功检查后才会更新文件；如果运行失败，现有链接仍会提供上一版结果。GitHub 负载较高时，计划任务可能稍有延迟。
+发布工作流每 30 分钟运行一次，分别在 **UTC 每小时的第 11 分钟和第 41 分钟**运行；也可在 [GitHub Actions](https://github.com/adamantida/proxyRepoChecker-rs/actions/workflows/proxy-collection.yml) 中手动启动。检查成功后才会更新文件；如果运行失败，现有链接仍会提供上一版结果。GitHub 负载较高时，计划任务可能稍有延迟。
 
 ## 💬 uSphere VPN
 
